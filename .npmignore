@@ -1,0 +1,8 @@
+node_modules/
+results/
+.git/
+.env
+.env.*
+!.env.example
+*.log
+*.tgz

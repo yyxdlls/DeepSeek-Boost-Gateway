@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0c1114">
+    <title>DeepSeek Boost Gateway</title>
+    <link rel="stylesheet" href="/__gateway/app.css">
+  </head>
+  <body>
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/__gateway/" aria-label="DeepSeek Boost Gateway 首页">
+        <span class="brand-mark" aria-hidden="true"><span>DB</span></span>
+        <span>
+          <strong>DeepSeek Boost</strong>
+          <small>Local Gateway</small>
+        </span>
+      </a>
+      <div class="top-actions">
+        <span id="connection-pill" class="status-pill waiting">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">正在连接</span>
+        </span>
+        <button id="token-button" class="icon-button" type="button" aria-label="管理令牌设置" title="管理令牌设置">钥匙</button>
+        <button id="refresh-button" class="button secondary" type="button">刷新</button>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">LOCAL TRAJECTORY CONSOLE</p>
+          <h1 id="page-title">看清每一次增强轨迹</h1>
+          <p class="lede">观察 Anchor 是否注入、推理有多长、命中了哪些轨迹短语，以及当前回复实际调用了什么工具。</p>
+        </div>
+        <button id="copy-endpoint" class="endpoint" type="button" title="复制 Harness Base URL">
+          <span>Harness Base URL</span>
+          <code id="endpoint-value">http://127.0.0.1:8642/v1</code>
+          <b>复制</b>
+        </button>
+      </section>
+
+      <section class="metric-grid" aria-label="Gateway 概览">
+        <article class="metric-card accent-cyan">
+          <span class="metric-label">运行模式</span>
+          <strong id="metric-mode">—</strong>
+          <small id="metric-mode-note">等待 Gateway</small>
+        </article>
+        <article class="metric-card accent-violet">
+          <span class="metric-label">已加载 Anchor</span>
+          <strong id="metric-anchors">—</strong>
+          <small id="metric-anchor-note">模型严格隔离</small>
+        </article>
+        <article class="metric-card accent-amber">
+          <span class="metric-label">保留请求</span>
+          <strong id="metric-retained">—</strong>
+          <small id="metric-retained-note">内存诊断记录</small>
+        </article>
+        <article class="metric-card accent-green">
+          <span class="metric-label">完整结束</span>
+          <strong id="metric-complete">—</strong>
+          <small id="metric-complete-note">当前可见请求</small>
+        </article>
+        <article class="metric-card accent-cyan">
+          <span class="metric-label">本次推理总长</span>
+          <strong id="metric-reasoning">—</strong>
+          <small id="metric-reasoning-note">仅当前回复，不含 Anchor</small>
+        </article>
+        <article class="metric-card accent-violet">
+          <span class="metric-label">工具 / Let me</span>
+          <strong id="metric-tools">—</strong>
+          <small id="metric-tools-note">当前可见回复汇总</small>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <article class="panel requests-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">REQUEST STREAM</p>
+              <h2>最近请求</h2>
+            </div>
+            <label class="auto-refresh">
+              <input id="auto-refresh" type="checkbox" checked>
+              <span aria-hidden="true"></span>
+              5 秒自动刷新
+            </label>
+          </div>
+
+          <div class="filters">
+            <label class="search-field">
+              <span class="sr-only">搜索请求</span>
+              <input id="search-input" type="search" placeholder="搜索模型、请求 ID 或工具">
+            </label>
+            <label>
+              <span class="sr-only">按状态筛选</span>
+              <select id="status-filter">
+                <option value="all">全部状态</option>
+                <option value="complete">完整结束</option>
+                <option value="interrupted">中断</option>
+                <option value="error">错误</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间 / 模型</th>
+                  <th>状态</th>
+                  <th>模式</th>
+                  <th>推理长度</th>
+                  <th>工具</th>
+                </tr>
+              </thead>
+              <tbody id="request-rows"></tbody>
+            </table>
+            <div id="request-empty" class="empty-state" hidden>
+              <span class="empty-glyph" aria-hidden="true">⌁</span>
+              <h3>还没有可显示的请求</h3>
+              <p>让 Harness 通过上方 Base URL 发起一次请求，完成或中断后会出现在这里。</p>
+            </div>
+          </div>
+          <p id="request-count" class="table-foot">等待数据</p>
+        </article>
+
+        <aside id="detail-panel" class="panel detail-panel" aria-live="polite">
+          <div class="detail-placeholder">
+            <span aria-hidden="true">↳</span>
+            <h2>选择一次请求</h2>
+            <p>这里会拆开显示本次回复、原会话历史和 Anchor 历史，避免把三者混在一起判断。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="lower-grid">
+        <article class="panel anchors-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="section-kicker">MODEL BINDINGS</p>
+              <h2>Anchor 管理</h2>
+            </div>
+            <span class="live-badge">生成后自动绑定</span>
+          </div>
+          <div id="anchor-list" class="anchor-list">
+            <p class="muted">等待 Gateway 配置</p>
+          </div>
+          <details class="anchor-builder">
+            <summary>创建模型专属 Anchor</summary>
+            <form id="anchor-form" class="anchor-form">
+              <label><span>目标配置</span><select id="anchor-profile" required></select></label>
+              <label><span>候选数</span><input id="anchor-runs" type="number" min="1" max="10" value="3" required></label>
+              <label><span>每候选最多轮数</span><input id="anchor-subturns" type="number" min="2" max="12" value="6" required></label>
+              <label><span>最大输出 tokens</span><input id="anchor-max-tokens" type="number" min="1" max="384000" value="384000" required></label>
+              <p id="anchor-cost-note" class="form-note">最多发起 18 次上游请求；实际通常更少。生成时使用该配置自己的 Gateway Key 和上游地址，配置未启用也可先生成。</p>
+              <button class="button primary" type="submit">开始生成</button>
+            </form>
+          </details>
+          <div id="anchor-jobs" class="job-list"></div>
+        </article>
+
+        <article class="panel config-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="section-kicker">LOCAL SERVICE</p>
+              <h2>运行信息</h2>
+            </div>
+          </div>
+          <dl id="config-list" class="config-list">
+            <div><dt>上游</dt><dd>—</dd></div>
+            <div><dt>采集</dt><dd>—</dd></div>
+            <div><dt>版本</dt><dd>—</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="panel profiles-panel">
+        <div class="panel-heading compact">
+          <div>
+            <p class="section-kicker">INDEPENDENT DATA PLANES</p>
+            <h2>Pro / Flash 独立配置</h2>
+          </div>
+          <span class="live-badge">保存后热应用</span>
+        </div>
+        <p class="panel-intro">WebUI 使用当前独立管理端口；Pro 和 Flash 各自维护启用状态、数据端口、Key、上游、增强模式和 Anchor。</p>
+        <div id="profile-list" class="profile-grid">
+          <p class="muted">等待可管理配置</p>
+        </div>
+      </section>
+
+      <footer>
+        <p>轨迹关键字和 minimal-like / standard-like 标签仅用于观察，不是质量评分，也不会自动改变 Anchor。</p>
+        <span id="last-updated">尚未刷新</span>
+      </footer>
+    </main>
+
+    <dialog id="token-dialog" class="token-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="section-kicker">MANAGEMENT ACCESS</p>
+            <h2>管理令牌</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+        </div>
+        <p>仅当 Gateway 配置了 <code>GATEWAY_MANAGEMENT_TOKEN</code> 时需要。令牌只保存在这个标签页的 sessionStorage。</p>
+        <label class="token-field">
+          <span>令牌</span>
+          <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="输入管理令牌">
+        </label>
+        <div class="dialog-actions">
+          <button id="clear-token" class="button ghost" value="cancel" type="button">清除</button>
+          <button id="save-token" class="button primary" value="default" type="submit">保存并连接</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/__gateway/app.js" defer></script>
+  </body>
+</html>

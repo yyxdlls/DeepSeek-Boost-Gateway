@@ -1,0 +1,24 @@
+{
+  "name": "deepseek-boost-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Protocol lab and local gateway for validated DeepSeek V4 anchor trajectories.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/gateway/server.mjs",
+    "launch": "node scripts/launch-gateway.mjs",
+    "gateway": "node src/gateway/server.mjs",
+    "gateway:inspect": "node src/gateway/inspect.mjs",
+    "anchor:build": "node src/lab/run-anchor-candidate.mjs --freeze",
+    "anchor:dry-run": "node src/lab/run-anchor-candidate.mjs --dry-run",
+    "anchor:open:build": "node src/lab/run-anchor-candidate.mjs --open-workstream --freeze",
+    "anchor:open:dry-run": "node src/lab/run-anchor-candidate.mjs --open-workstream --dry-run",
+    "anchor:inspect": "node src/lab/inspect-anchor.mjs",
+    "probe:minimal": "node src/lab/run-minimal-probe.mjs",
+    "probe:dry-run": "node src/lab/run-minimal-probe.mjs --dry-run"
+  }
+}
