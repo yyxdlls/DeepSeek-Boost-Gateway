@@ -5,7 +5,7 @@ import { summarizeMessageTrajectory } from './trajectory-stats.mjs'
 
 export const DEFAULT_ANCHOR_PATH = resolve(
   'anchors',
-  'dsh-minimal-open-workstream-two-tool-v2.json',
+  'dsh-minimal-open-workstream-pro.json',
 )
 
 export const ENVIRONMENT_SWITCH_MESSAGE = `The bootstrap episode above is complete.

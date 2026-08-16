@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $defaultId = if ($OpenWorkstream) {
-    'dsh-minimal-open-workstream-two-tool-v2'
+    'dsh-minimal-open-workstream-pro'
 }
 else {
     'dsh-minimal-two-tool-v1'

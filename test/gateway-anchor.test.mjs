@@ -19,10 +19,10 @@ async function close(server) {
 
 test('loads the frozen anchor only after fingerprint verification', async () => {
   const loaded = await loadAnchorArtifact()
-  assert.equal(loaded.id, 'dsh-minimal-open-workstream-two-tool-v2')
+  assert.equal(loaded.id, 'dsh-minimal-open-workstream-pro')
   assert.equal(
     loaded.fingerprint,
-    'a2cec51d4b346c8c0c7b41433d6fd862b74c0d9e7efb3232b17792b5ec75916a',
+    '63f691b0bdfdb5788cdf1bd0ee4f0bc98d0f24c7e09f492cde5eda2a61ed42df',
   )
   assert.equal(loaded.artifact.trajectory.messages.length, 6)
 })

@@ -48,6 +48,7 @@ const state = {
 }
 
 let toastTimer
+let loadEpoch = 0
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -321,8 +322,10 @@ function renderMetrics() {
     : '上游尚未返回缓存 token 数据'
 }
 
+const STREAM_LIMIT = 16
+
 function renderRows() {
-  const entries = filteredEntries()
+  const entries = filteredEntries().slice(0, STREAM_LIMIT)
   elements.requestRows.innerHTML = entries.map((entry) => {
     const status = requestState(entry)
     const summary = entry.response?.summary
@@ -599,8 +602,9 @@ function renderAll() {
   renderConfig()
 }
 
-async function loadData({ quiet = false } = {}) {
-  if (state.loading) return
+async function loadData({ quiet = false, force = false } = {}) {
+  if (state.loading && !force) return
+  const epoch = ++loadEpoch
   state.loading = true
   if (!quiet) setConnection('waiting', '正在连接')
   elements.refreshButton.disabled = true
@@ -612,6 +616,7 @@ async function loadData({ quiet = false } = {}) {
       fetchOptionalJson('/__gateway/anchors/jobs', { jobs: [] }),
       fetchOptionalJson('/__gateway/anchors', { anchors: [] }),
     ])
+    if (epoch !== loadEpoch) return
     state.health = health
     state.config = config
     state.jobs = Array.isArray(jobs.jobs) ? jobs.jobs : []
@@ -629,6 +634,7 @@ async function loadData({ quiet = false } = {}) {
     elements.lastUpdated.textContent = `最后刷新 ${formatTime(new Date().toISOString())}`
     renderAll()
   } catch (error) {
+    if (epoch !== loadEpoch) return
     if (error.status === 401) {
       setConnection('locked', '需要管理令牌')
       if (!elements.tokenDialog.open) elements.tokenDialog.showModal()
@@ -637,8 +643,10 @@ async function loadData({ quiet = false } = {}) {
       if (!quiet) toast('无法读取 Gateway 状态')
     }
   } finally {
-    state.loading = false
-    elements.refreshButton.disabled = false
+    if (epoch === loadEpoch) {
+      state.loading = false
+      elements.refreshButton.disabled = false
+    }
   }
 }
 
@@ -754,8 +762,12 @@ elements.clearDiagnostics.addEventListener('click', async () => {
       body: { confirmation },
     })
     toast(`已清理 ${formatNumber(result.deleted)} 条请求记录`)
+    loadEpoch++
+    state.entries = []
+    state.retained = 0
     state.selectedId = null
-    await loadData({ quiet: true })
+    renderAll()
+    await loadData({ quiet: true, force: true })
   } catch (error) {
     toast(`清理失败：${error.message}`)
   } finally {

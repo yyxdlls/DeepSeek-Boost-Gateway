@@ -67,6 +67,6 @@ test('enables both split profiles in anchor mode with bundled model-specific bas
   const profiles = gatewayRuntimeProfiles({ GATEWAY_INSTANCE_MODE: 'split' })
   assert.deepEqual(profiles.map((profile) => profile.name), ['pro', 'flash'])
   assert.deepEqual(profiles.map((profile) => profile.defaultMode), ['anchor', 'anchor'])
-  assert.match(profiles[0].anchorPaths['deepseek-v4-pro'], /two-tool-v2\.json$/)
-  assert.match(profiles[1].anchorPaths['deepseek-v4-flash'], /flash-copy\.json$/)
+  assert.match(profiles[0].anchorPaths['deepseek-v4-pro'], /open-workstream-pro\.json$/)
+  assert.match(profiles[1].anchorPaths['deepseek-v4-flash'], /open-workstream-flash\.json$/)
 })

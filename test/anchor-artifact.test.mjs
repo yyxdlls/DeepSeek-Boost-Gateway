@@ -8,7 +8,7 @@ const artifactUrl = new URL(
   import.meta.url,
 )
 const openArtifactUrl = new URL(
-  '../anchors/dsh-minimal-open-workstream-two-tool-v2.json',
+  '../anchors/dsh-minimal-open-workstream-pro.json',
   import.meta.url,
 )
 
@@ -81,10 +81,10 @@ test('frozen open-workstream anchor remains unfinished and internally valid', as
 
   assert.equal(
     storedFingerprint,
-    'a2cec51d4b346c8c0c7b41433d6fd862b74c0d9e7efb3232b17792b5ec75916a',
+    '63f691b0bdfdb5788cdf1bd0ee4f0bc98d0f24c7e09f492cde5eda2a61ed42df',
   )
   assert.equal(storedFingerprint, computedFingerprint)
-  assert.equal(artifact.id, 'dsh-minimal-open-workstream-two-tool-v2')
+  assert.equal(artifact.id, 'dsh-minimal-open-workstream-pro')
   assert.deepEqual(
     artifact.trajectory.messages.map((message) => message.role),
     ['system', 'user', 'assistant', 'tool', 'assistant', 'tool'],

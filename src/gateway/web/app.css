@@ -255,7 +255,8 @@ code {
 }
 
 .page-shell {
-  width: calc((100% - 24px) / 0.85);
+  width: calc((100% - 120px) / 0.85);
+  max-width: calc(1480px / 0.85);
   margin: 0 auto;
   padding: clamp(42px, 6vw, 84px) 0 36px;
   zoom: 0.85;
@@ -305,9 +306,13 @@ h1 {
 
 .endpoint {
   display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 20px;
+  row-gap: 10px;
   flex: 0 0 auto;
-  min-width: min(100%, 310px);
-  padding: 14px 16px;
+  min-width: min(100%, 430px);
+  padding: 18px 22px;
   text-align: left;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -318,25 +323,36 @@ h1 {
   border-color: rgba(85, 228, 220, 0.4);
 }
 
-.endpoint span {
+.endpoint-label {
+  margin: 0;
   color: var(--faint);
-  font-size: 15px;
+  font-size: 16.5px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .endpoint code {
-  margin: 6px 0 2px;
+  grid-column: 1 / -1;
+  margin: 0;
   color: var(--cyan);
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .endpoint b {
   justify-self: end;
-  margin-top: -18px;
-  color: var(--muted);
-  font-size: 16.5px;
+  margin: 0;
+  padding: 5px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--cyan);
+  background: var(--cyan-soft);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.endpoint:hover b {
+  border-color: rgba(85, 228, 220, 0.4);
 }
 
 .metric-grid {
@@ -398,7 +414,13 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(390px, 0.65fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+}
+
+.requests-panel {
+  display: flex;
+  flex-direction: column;
+  height: 700px;
 }
 
 .panel {
@@ -518,8 +540,10 @@ h1 {
 }
 
 .table-wrap {
-  min-height: 322px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: auto;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: rgba(6, 10, 12, 0.28);
@@ -704,8 +728,7 @@ tbody tr:last-child td {
 .detail-panel {
   position: sticky;
   top: 84px;
-  min-height: 484px;
-  max-height: calc(100vh - 102px);
+  height: 700px;
   overflow-y: auto;
 }
 

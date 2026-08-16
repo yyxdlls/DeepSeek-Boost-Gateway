@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "deepseek-v4-anchor-artifact",
-  "id": "dsh-minimal-open-workstream-two-tool-v2-flash-copy",
+  "id": "dsh-minimal-open-workstream-flash",
   "createdAt": "2026-08-16T17:20:46.607Z",
   "source": {
     "endpoint": "https://api.deepseek.com/chat/completions",
@@ -42,7 +42,7 @@
       "maxTokens": 384000
     },
     "derivedFrom": {
-      "anchorId": "dsh-minimal-open-workstream-two-tool-v2",
+      "anchorId": "dsh-minimal-open-workstream-pro",
       "model": "deepseek-v4-pro",
       "method": "prompt-and-trajectory-copy"
     }
@@ -316,6 +316,6 @@
     "mode": "same-active-workstream",
     "message": "Let's continue working on the same long, interconnected software engineering problem.\nFollow the current Harness instructions below and use the tools they provide. Keep the same careful inspect-before-act approach, integrate the conversation that follows with the work already in progress, and never invent tool results."
   },
-  "artifactFingerprint": "3226c4ca0c5cb865836815f52324bb922803d2be92e28d8bf370cc7534f827ea"
+  "artifactFingerprint": "b944e76d9becd41a702ecb795513ec6e5a92a6e7b9059de0540de8c3ee0d0701"
 }
 

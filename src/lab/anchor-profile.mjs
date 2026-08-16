@@ -7,7 +7,7 @@ import {
 
 export const ANCHOR_ID = 'dsh-minimal-two-tool-v1'
 export const OPEN_WORKSTREAM_ANCHOR_ID =
-  'dsh-minimal-open-workstream-two-tool-v2'
+  'dsh-minimal-open-workstream-pro'
 
 export const ANCHOR_TASK = `Work only with the synthetic repository exposed by the tools.
 Before answering, complete this sequence in order:

@@ -5,8 +5,8 @@ import { loadAnchorArtifact } from './anchor.mjs'
 export const DEFAULT_ANCHOR_DIRECTORY = resolve('anchors')
 
 const BUNDLED_DEFAULT_FILES = new Set([
-  'dsh-minimal-open-workstream-two-tool-v2.json',
-  'dsh-minimal-open-workstream-two-tool-v2-flash-copy.json',
+  'dsh-minimal-open-workstream-pro.json',
+  'dsh-minimal-open-workstream-flash.json',
 ])
 
 function portablePath(path) {

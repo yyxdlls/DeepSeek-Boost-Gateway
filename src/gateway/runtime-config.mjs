@@ -2,8 +2,8 @@ import { join } from 'node:path'
 
 const MODEL_PRO = 'deepseek-v4-pro'
 const MODEL_FLASH = 'deepseek-v4-flash'
-const DEFAULT_PRO_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-two-tool-v2.json'
-const DEFAULT_FLASH_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-two-tool-v2-flash-copy.json'
+const DEFAULT_PRO_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-pro.json'
+const DEFAULT_FLASH_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-flash.json'
 
 const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
   Object.freeze({
