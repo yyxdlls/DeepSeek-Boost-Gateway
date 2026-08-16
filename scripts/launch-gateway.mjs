@@ -158,13 +158,13 @@ async function main() {
     .map((api) => `API (${api.profile}): ${api.url}`)
     .join('\n')
   if (await gatewayMatchesDeployment(launch.health, launch.deploymentMode)) {
-    process.stdout.write(`Gateway 已经在运行，直接复用现有服务。\nWebUI: ${launch.webUi}\n${apiLines}\n`)
+    process.stdout.write(`Gateway 已经由另一个进程运行。\n当前页面: ${launch.webUi}\n${apiLines}\n当前终端没有重复启动 Gateway；如需让终端拥有服务，请先运行关闭脚本，再重新启动。\n`)
     const opened = await openWebUi(launch.webUi, { noOpen: NO_OPEN })
     if (!opened && !NO_OPEN) process.stdout.write(`请在浏览器中打开 WebUI：${launch.webUi}\n`)
     return
   }
 
-  process.stdout.write(`${apiLines}\n`)
+  process.stdout.write(`当前页面: ${launch.webUi}\n${apiLines}\n关闭当前终端会停止本次启动的 Gateway。\n`)
   const readiness = openWhenReady(launch.webUi, launch.health)
   await import('../src/gateway/server.mjs')
   await readiness

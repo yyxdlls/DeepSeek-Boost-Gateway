@@ -1,5 +1,7 @@
 import { DEFAULT_ANCHOR_PATH, loadAnchorArtifact } from './anchor.mjs'
+import { loadDiagnosticHistory } from './diagnostic-history.mjs'
 import { createGatewayServer, listenGateway } from './proxy.mjs'
+import { join } from 'node:path'
 
 async function loadModelAnchor(model, path) {
   const anchor = await loadAnchorArtifact(path)
@@ -45,7 +47,19 @@ export function assertProfileMode(profile) {
 export async function startGatewayProfile(profile, options = {}) {
   assertProfileMode(profile)
   const anchors = await loadProfileAnchors(profile)
+  let diagnosticStore = options.diagnosticStore
+  if (!Array.isArray(diagnosticStore) || diagnosticStore.length === 0) {
+    const restored = await loadDiagnosticHistory({
+      profile: profile.name,
+      logFile: join(profile.logDir ?? join(process.cwd(), 'results', 'gateway'), 'traffic.jsonl'),
+      limit: Number(profile.diagnosticHistoryLimit) || 100,
+      maxFiles: Number(profile.logMaxFiles) || 5,
+    })
+    if (Array.isArray(diagnosticStore)) diagnosticStore.push(...restored)
+    else diagnosticStore = restored
+  }
   const server = createGatewayServer({
+    instanceId: options.instanceId ?? null,
     version: options.version ?? null,
     deploymentMode: options.deploymentMode ?? 'split',
     profileName: profile.name,
@@ -69,7 +83,8 @@ export async function startGatewayProfile(profile, options = {}) {
     logDir: profile.logDir,
     webUiEnabled: options.webUiEnabled ?? false,
     managementEnabled: options.managementEnabled ?? false,
-    diagnosticStore: options.diagnosticStore,
+    diagnosticStore,
+    onDiagnostic: options.onDiagnostic,
   })
   await listenGateway(server, profile.host, profile.port)
   return server

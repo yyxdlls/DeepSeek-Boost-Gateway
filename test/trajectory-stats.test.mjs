@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   OpenAiResponseObserver,
   TRAJECTORY_MARKER_PROFILE,
+  summarizeCacheUsage,
   summarizeMessageTrajectory,
   summarizeResponseBody,
   summarizeTextBlocks,
@@ -19,7 +20,43 @@ test('counts only exact diagnostic phrases and keeps variants separate', () => {
   assert.equal(summary.markers.im, 1)
   assert.equal(summary.markers.iApostropheAm, 1)
   assert.equal(summary.openingStyle, 'we-need')
+  assert.equal(summary.openingPreview, 'We need inspect. Let')
   assert.equal(TRAJECTORY_MARKER_PROFILE.diagnosticOnly, true)
+})
+
+test('keeps only four English words or four Chinese characters for the opening preview', () => {
+  assert.equal(
+    summarizeTextBlocks(['We need inspect this repository carefully.']).openingPreview,
+    'We need inspect this',
+  )
+  assert.equal(
+    summarizeTextBlocks(['我们需要先检查仓库。']).openingPreview,
+    '我们需要',
+  )
+})
+
+test('normalizes DeepSeek and compatible-provider prompt cache usage', () => {
+  assert.deepEqual(summarizeCacheUsage({
+    prompt_tokens: 1000,
+    prompt_cache_hit_tokens: 750,
+    prompt_cache_miss_tokens: 250,
+  }), {
+    hitTokens: 750,
+    missTokens: 250,
+    totalTokens: 1000,
+    hitRate: 0.75,
+  })
+
+  assert.deepEqual(summarizeCacheUsage({
+    prompt_tokens: 200,
+    prompt_tokens_details: { cached_tokens: 160 },
+  }), {
+    hitTokens: 160,
+    missTokens: 40,
+    totalTokens: 200,
+    hitRate: 0.8,
+  })
+  assert.equal(summarizeCacheUsage({ total_tokens: 12 }), null)
 })
 
 test('summarizes historical assistant messages without mixing tool results', () => {
@@ -51,7 +88,12 @@ test('summarizes a JSON response with current-response scope', () => {
       },
       finish_reason: 'tool_calls',
     }],
-    usage: { total_tokens: 12 },
+    usage: {
+      total_tokens: 12,
+      prompt_tokens: 10,
+      prompt_cache_hit_tokens: 8,
+      prompt_cache_miss_tokens: 2,
+    },
   }), 'application/json')
 
   assert.equal(summary.scope, 'current_response')
@@ -61,6 +103,7 @@ test('summarizes a JSON response with current-response scope', () => {
   assert.equal(summary.content.chars, 4)
   assert.deepEqual(summary.tools.names, ['read'])
   assert.equal(summary.usage.total_tokens, 12)
+  assert.equal(summary.cache.hitRate, 0.8)
 })
 
 test('reassembles phrases and tool calls split across SSE network chunks', () => {

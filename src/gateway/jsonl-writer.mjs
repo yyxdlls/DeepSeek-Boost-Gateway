@@ -37,6 +37,16 @@ export class RotatingJsonlWriter {
     return operation
   }
 
+  clear() {
+    const operation = this.queue.then(async () => {
+      for (let index = 0; index < this.maxFiles; index += 1) {
+        await rm(index === 0 ? this.path : `${this.path}.${index}`, { force: true })
+      }
+    })
+    this.queue = operation.catch(() => {})
+    return operation
+  }
+
   async #appendLine(line) {
     await mkdir(dirname(this.path), { recursive: true })
     const lineBytes = Buffer.byteLength(line, 'utf8')

@@ -7,6 +7,7 @@ import {
   applyManagedConfig,
   emptyManagedConfig,
   loadManagedConfig,
+  maskApiKey,
   managedProfileSecrets,
   managedProfileViews,
   saveManagedConfig,
@@ -49,8 +50,16 @@ test('managed profiles independently override Pro and Flash without exposing key
   const views = managedProfileViews(environment, document)
   assert.equal(views.find((profile) => profile.name === 'pro').apiKeyConfigured, true)
   assert.equal(views.find((profile) => profile.name === 'flash').apiKeyConfigured, true)
+  assert.equal(views.find((profile) => profile.name === 'pro').apiKeyPreview, 'pro-sec••••cret')
+  assert.equal(views.find((profile) => profile.name === 'flash').apiKeyPreview, 'flash-s••••cret')
   assert.equal(JSON.stringify(views).includes('pro-secret'), false)
   assert.equal(JSON.stringify(views).includes('flash-secret'), false)
+})
+
+test('API key previews reveal only bounded edges', () => {
+  assert.equal(maskApiKey('sk-1234567890abcdef'), 'sk-1234••••cdef')
+  assert.equal(maskApiKey('secret'), 'se••••et')
+  assert.equal(maskApiKey(''), '')
 })
 
 test('blank key updates preserve a configured key and explicit clearing removes it', () => {

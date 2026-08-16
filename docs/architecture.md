@@ -4,7 +4,7 @@
 
 目标产品是一个本地 Web Gateway：数据面向 Harness 暴露 OpenAI-compatible API，管理面负责 Provider、Execution Profile、Anchor Artifact、实验和诊断。
 
-Phase 0 的协议实验已经完成。当前数据面实现固定结构化 Anchor replay、透明代理和模型隔离；管理面提供 JSON/CLI 诊断、Gateway 内置 WebUI、Pro/Flash 独立持久化配置、数据监听热切换和后台 Anchor 创建。动态 promotion 与跨重启诊断存储仍属于后续产品层，不参与当前已验证机制。
+Phase 0 的协议实验已经完成。当前数据面实现固定结构化 Anchor replay、透明代理和模型隔离；管理面提供 JSON/CLI 诊断、Gateway 内置 WebUI、Pro/Flash 独立持久化配置、子进程热切换、跨重启诊断恢复和后台 Anchor 创建。动态 promotion 仍属于后续产品层，不参与当前已验证机制。
 
 第一道门槛是两臂协议实验：固定模型、system、任务、thinking 和 256000 输出上限，只比较当前 Windows DSH Standard-family 的 `pwsh + read` 对照与真实 DSH Minimal 的 `persistent bash + str_replace_editor` schema。两臂交错运行，避免把低输出预算或短时后端漂移误判成工具协议效果。该实验只观察首次工具调用前的 reasoning，不执行模型生成的命令。
 
@@ -44,7 +44,7 @@ JSON 与 SSE 进入同一个响应观测器。SSE 在转发过程中按 choice �
 
 每次响应还记录 finish reason、usage、工具调用序列、客户端断流和上游传输错误。只读诊断面默认保留内存中的最近 100 次统计，不返回原始提示或回复；JSONL metadata 日志有大小与份数上限。
 
-本地 WebUI 由 Gateway 直接提供无构建步骤的静态资源。兼容 `single` 模式下它与数据面共用监听；`split` 模式下管理/WebUI、Pro 数据面和 Flash 数据面分别监听独立端口，管理端聚合两个实例的脱敏诊断。数据端口不提供页面或公开诊断路径。管理令牌只进入自定义请求头并保存在标签页 sessionStorage，既不进入 URL 也不由 Gateway 返回。所有 `/__gateway/` 路径均在本地终止，不能回落到 Provider。
+本地 WebUI 由 Gateway 管理父进程直接提供无构建步骤的静态资源。兼容 `single` 模式下它与数据面共用监听；`split` 模式下管理/WebUI 留在父进程，Pro 与 Flash 数据面分别运行在受 IPC 监管的子进程和独立端口。父进程结束或 IPC 断开时，子进程主动退出。数据端口不提供页面或公开诊断路径。管理令牌只进入自定义请求头并保存在标签页 sessionStorage，既不进入 URL 也不由 Gateway 返回。所有 `/__gateway/` 路径均在本地终止，不能回落到 Provider。
 
 ## 运行时切换
 

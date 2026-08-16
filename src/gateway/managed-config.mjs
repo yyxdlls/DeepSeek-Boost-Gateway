@@ -24,6 +24,13 @@ function own(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key)
 }
 
+export function maskApiKey(value) {
+  const key = String(value ?? '')
+  if (!key) return ''
+  if (key.length <= 8) return `${key.slice(0, 2)}••••${key.slice(-2)}`
+  return `${key.slice(0, 7)}••••${key.slice(-4)}`
+}
+
 function validateDocument(document) {
   if (!isRecord(document)) throw new Error('Managed Gateway config must be a JSON object.')
   if (document.schemaVersion !== 1) {
@@ -146,6 +153,7 @@ export function managedProfileViews(environment, document) {
     upstreamBaseUrl: profile.upstreamBaseUrl,
     apiKeyConfigured: Boolean(profile.gatewayApiKey),
     apiKeySource: profile.gatewayApiKeySource ?? 'none',
+    apiKeyPreview: maskApiKey(profile.gatewayApiKey),
     enhancementMode: profile.defaultMode,
     anchorPath: profile.anchorPaths[profile.models[0]] ?? '',
     anchorConfigured: Boolean(profile.anchorPaths[profile.models[0]]),

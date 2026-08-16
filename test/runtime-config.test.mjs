@@ -62,3 +62,11 @@ test('uses a dedicated management listener in split mode', () => {
     managementToken: '',
   })
 })
+
+test('enables both split profiles in anchor mode with bundled model-specific baselines', () => {
+  const profiles = gatewayRuntimeProfiles({ GATEWAY_INSTANCE_MODE: 'split' })
+  assert.deepEqual(profiles.map((profile) => profile.name), ['pro', 'flash'])
+  assert.deepEqual(profiles.map((profile) => profile.defaultMode), ['anchor', 'anchor'])
+  assert.match(profiles[0].anchorPaths['deepseek-v4-pro'], /two-tool-v2\.json$/)
+  assert.match(profiles[1].anchorPaths['deepseek-v4-flash'], /flash-copy\.json$/)
+})

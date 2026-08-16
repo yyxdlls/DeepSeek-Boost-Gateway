@@ -1,4 +1,3 @@
-import { once } from 'node:events'
 import {
   applyManagedConfig,
   managedProfileSecrets,
@@ -6,13 +5,16 @@ import {
   saveManagedConfig,
   updateManagedProfile,
 } from './managed-config.mjs'
-import { startGatewayProfile } from './gateway-instance.mjs'
+import { spawnGatewayProfileProcess } from './profile-process.mjs'
 import { gatewayRuntimeProfiles } from './runtime-config.mjs'
 
 async function stopServer(server) {
+  if (server?.gatewayStop) {
+    await server.gatewayStop()
+    return
+  }
   if (!server?.listening) return
-  server.close()
-  await once(server, 'close')
+  await new Promise((resolve) => server.close(resolve))
 }
 
 function sameListener(left, right) {
@@ -27,6 +29,7 @@ export class GatewayRuntime {
     this.document = options.document
     this.configPath = options.configPath
     this.version = options.version ?? null
+    this.instanceId = options.instanceId ?? null
     this.dataServers = options.dataServers ?? []
     this.diagnosticStores = new Map()
   }
@@ -93,14 +96,23 @@ export class GatewayRuntime {
     this.dataServers.splice(0)
   }
 
+  async clearDiagnostics() {
+    const deleted = (await Promise.all(
+      this.dataServers.map((server) => server.gatewayClearDiagnostics?.() ?? 0),
+    )).reduce((sum, count) => sum + Number(count || 0), 0)
+    for (const store of this.diagnosticStores.values()) store.splice(0)
+    return deleted
+  }
+
   diagnosticStore(name) {
     if (!this.diagnosticStores.has(name)) this.diagnosticStores.set(name, [])
     return this.diagnosticStores.get(name)
   }
 
   async #start(profile) {
-    return startGatewayProfile(profile, {
+    return spawnGatewayProfileProcess(profile, {
       version: this.version,
+      instanceId: this.instanceId,
       deploymentMode: 'split',
       webUiEnabled: false,
       managementEnabled: false,

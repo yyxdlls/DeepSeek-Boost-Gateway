@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { applyAnchorToChatRequest } from './anchor.mjs'
 import { RotatingJsonlWriter } from './jsonl-writer.mjs'
+import { diagnosticEntry } from './diagnostic-history.mjs'
 import {
   OpenAiResponseObserver,
   TRAJECTORY_MARKER_PROFILE,
@@ -262,6 +263,7 @@ function publicConfig(config) {
     path: anchor.path ?? null,
   }))
   return {
+    instanceId: config.instanceId,
     version: config.version,
     deploymentMode: config.deploymentMode,
     profile: config.profileName,
@@ -289,41 +291,6 @@ function publicConfig(config) {
     activityLogFile: config.activityLogFile,
     anchors,
     anchor: anchors.length === 1 ? anchors[0] : null,
-  }
-}
-
-function diagnosticEntry(exchange, profile = 'single') {
-  return {
-    schemaVersion: 1,
-    profile,
-    requestId: exchange.requestId,
-    startedAt: exchange.startedAt,
-    completedAt: exchange.completedAt ?? null,
-    durationMs: exchange.durationMs ?? null,
-    mode: exchange.mode,
-    request: exchange.request
-      ? {
-          ...(exchange.request.summary ?? {}),
-          credentialSource: exchange.request.credentialSource ?? null,
-        }
-      : null,
-    transformation: exchange.transformation ?? null,
-    response: exchange.response
-      ? {
-          status: exchange.response.status,
-          bytes: exchange.response.bytes ?? null,
-          capturedBytes: exchange.response.capturedBytes ?? null,
-          captureTruncated:
-            Number.isFinite(exchange.response.bytes) &&
-            Number.isFinite(exchange.response.capturedBytes)
-              ? exchange.response.capturedBytes < exchange.response.bytes
-              : null,
-          abortedByClient: Boolean(exchange.response.abortedByClient),
-          transportError: exchange.response.transportError ?? null,
-          error: exchange.response.error ?? null,
-          summary: exchange.response.summary ?? null,
-        }
-      : null,
   }
 }
 
@@ -362,6 +329,7 @@ export function createGatewayServer(options = {}) {
     throw new Error('Gateway upstreamBaseUrl must use http or https.')
   }
   const config = {
+    instanceId: options.instanceId ?? null,
     version: options.version ?? null,
     deploymentMode: options.deploymentMode ?? 'single',
     profileName: options.profileName ?? 'single',
@@ -394,6 +362,7 @@ export function createGatewayServer(options = {}) {
     activityLogFile: resolve(
       options.activityLogFile ?? join(logDir, 'activity.jsonl'),
     ),
+    onDiagnostic: typeof options.onDiagnostic === 'function' ? options.onDiagnostic : null,
   }
   config.trafficWriter = new RotatingJsonlWriter(config.logFile, {
     maxBytes: config.logMaxBytes,
@@ -414,8 +383,10 @@ export function createGatewayServer(options = {}) {
     ? options.diagnosticStore
     : []
   const addDiagnostic = (exchange) => {
-    diagnostics.push(diagnosticEntry(exchange, config.profileName))
+    const entry = diagnosticEntry(exchange, config.profileName)
+    diagnostics.push(entry)
     while (diagnostics.length > config.diagnosticHistoryLimit) diagnostics.shift()
+    config.onDiagnostic?.(entry)
   }
 
   const server = http.createServer(async (request, response) => {
@@ -900,6 +871,15 @@ export function createGatewayServer(options = {}) {
       config.diagnosticHistoryLimit,
     )
     return diagnostics.slice(-normalizedLimit).reverse()
+  }
+  server.gatewayClearDiagnostics = async () => {
+    const deleted = diagnostics.length
+    diagnostics.splice(0)
+    await Promise.all([
+      config.trafficWriter.clear(),
+      config.activityWriter.clear(),
+    ])
+    return deleted
   }
   return server
 }

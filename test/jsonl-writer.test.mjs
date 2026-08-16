@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -21,4 +21,17 @@ test('serializes concurrent appends and rotates bounded JSONL files', async () =
   assert.equal(current.sequence, 3)
   assert.equal(previous.sequence, 2)
   await assert.rejects(readFile(`${path}.2`, 'utf8'), { code: 'ENOENT' })
+})
+
+test('clears the active and rotated JSONL files through the writer queue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'deepseek-jsonl-clear-test-'))
+  const path = join(directory, 'traffic.jsonl')
+  const writer = new RotatingJsonlWriter(path, { maxBytes: 24, maxFiles: 3 })
+  await writer.append({ id: 1, value: 'rotate-me' })
+  await writer.append({ id: 2, value: 'rotate-me' })
+  await writer.clear()
+
+  for (const candidate of [path, `${path}.1`, `${path}.2`]) {
+    await assert.rejects(access(candidate), /ENOENT/)
+  }
 })

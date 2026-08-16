@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { AnchorJobManager } from './anchor-jobs.mjs'
+import { listAnchorArtifacts } from './anchor-catalog.mjs'
 import { startGatewayProfile } from './gateway-instance.mjs'
 import { GatewayRuntime } from './gateway-runtime.mjs'
 import { loadLocalEnv } from './load-env.mjs'
@@ -9,6 +11,10 @@ import {
 } from './managed-config.mjs'
 import { createGatewayManagementServer } from './management-server.mjs'
 import { listenGateway } from './proxy.mjs'
+import {
+  removeGatewayPidFile,
+  writeGatewayPidFile,
+} from './pid-file.mjs'
 import {
   gatewayManagementConfig,
   gatewayRuntimeProfiles,
@@ -39,10 +45,12 @@ function printDataServer(server, deploymentMode) {
 }
 
 const deploymentMode = process.env.GATEWAY_INSTANCE_MODE ?? 'single'
+const instanceId = randomUUID()
 const dataServers = []
 let managementServer = null
 let runtime = null
 let anchorJobs = null
+let healthUrl = null
 
 try {
   if (deploymentMode === 'split') {
@@ -52,6 +60,7 @@ try {
       document: managedDocument,
       configPath: DEFAULT_MANAGED_CONFIG_PATH,
       version: packageMetadata.version,
+      instanceId,
       dataServers,
     })
     const management = gatewayManagementConfig(process.env)
@@ -74,6 +83,7 @@ try {
     })
     managementServer = createGatewayManagementServer({
       version: packageMetadata.version,
+      instanceId,
       host: management.host,
       port: management.port,
       managementToken: management.managementToken,
@@ -81,8 +91,11 @@ try {
       profileViews: () => runtime.profileViews(),
       updateProfile: (name, patch) => runtime.updateProfile(name, patch),
       anchorJobs,
+      listAnchors: () => listAnchorArtifacts(),
+      clearDiagnostics: () => runtime.clearDiagnostics(),
     })
     const address = await listenGateway(managementServer, management.host, management.port)
+    healthUrl = `http://${browserHost(address.address)}:${address.port}/__gateway/health`
     process.stdout.write(`${JSON.stringify({
       event: 'gateway-management-listening',
       deploymentMode,
@@ -97,13 +110,17 @@ try {
     const [profile] = gatewayRuntimeProfiles(process.env)
     const server = await startGatewayProfile(profile, {
       version: packageMetadata.version,
+      instanceId,
       deploymentMode,
       webUiEnabled: true,
       managementEnabled: true,
     })
     dataServers.push(server)
     printDataServer(server, deploymentMode)
+    const address = server.address()
+    healthUrl = `http://${browserHost(address.address)}:${address.port}/__gateway/health`
   }
+  await writeGatewayPidFile({ instanceId, healthUrl })
 } catch (error) {
   await anchorJobs?.close()
   await runtime?.close()
@@ -123,6 +140,11 @@ async function shutdown() {
   }
   if (managementServer?.listening) {
     await new Promise((resolve) => managementServer.close(resolve))
+  }
+  try {
+    await removeGatewayPidFile(instanceId)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
   }
 }
 

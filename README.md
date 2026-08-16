@@ -18,13 +18,22 @@ Linux：
 sh ./start-linux.sh
 ```
 
+关闭 Gateway 时不要结束所有 Node.js 进程。使用配套脚本：
+
+```text
+Windows: stop-windows.cmd
+Linux:   sh ./stop-linux.sh
+```
+
+也可以运行 `npm stop`。启动成功后会创建 `results/gateway.pid.json`；关闭工具会同时校验 PID、管理健康地址和随机实例指纹，三者匹配才会发送终止信号。失效 PID 文件只会被清理，不会用于结束其他进程。
+
 一键脚本会执行以下工作：
 
 1. 检查 Node.js 版本；未安装或低于 22 时显示官方下载地址并停止，不会擅自修改系统 Node.js；
 2. 首次启动时从 `.env.example` 创建 `.env`，以后不会覆盖用户配置；
 3. 检查 `package.json` 中的运行时依赖，缺失时调用 npm 自动安装；当前版本没有第三方运行时依赖；
 4. 检测现有 Gateway，已运行时直接复用，否则启动服务；
-5. Gateway 就绪后用默认浏览器打开 WebUI。Linux 无桌面环境时只输出访问地址。
+5. 启动脚本打开并保留一个 Gateway 终端，明确显示当前 WebUI 地址；关闭该终端会结束它启动的 Gateway。Gateway 就绪后再用默认浏览器打开 WebUI。Linux 无桌面环境时在当前终端前台运行并只输出访问地址。
 
 服务器或其他不希望自动打开浏览器的环境可以先设置 `GATEWAY_NO_OPEN=1`。也可以跳过一键脚本，手动复制 `.env.example` 为 `.env` 并启动：
 
@@ -44,13 +53,13 @@ http://127.0.0.1:8643/v1
 http://127.0.0.1:8642/
 ```
 
-WebUI 与 Gateway 由同一个 Node.js 进程提供，不需要安装或启动额外的前端服务。页面可以查看在线状态、当前模式、模型与 Anchor 绑定、最近请求、本次推理/正文长度、轨迹关键字命中、当前工具调用、Anchor 历史工具序列、结束状态和用量，也能分别管理 Pro/Flash 并创建模型专属 Anchor。它只读取脱敏诊断数据，不显示提示词、思维链或回复原文。
+WebUI 不需要安装或启动额外前端服务。管理/WebUI 父进程监管 Pro 与 Flash 两个数据子进程；父进程或常驻终端结束时，两个子进程会自动退出。页面可以查看在线状态、模型与 Anchor 绑定、全部已保存请求汇总、单条及总体 token 缓存命中率、推理/正文长度、轨迹关键字、工具调用、结束状态和用量，也能分别管理 Pro/Flash、从已生成 Artifact 下拉选择 Anchor 并创建模型专属 Anchor。它只读取脱敏诊断数据，不显示提示词、完整思维链或回复原文；新记录最多显示英文开头四词或中文开头四字。
 
 如需旧式单端口兼容部署，可以把 `GATEWAY_INSTANCE_MODE` 改回 `single`；此模式保留只读诊断，但不提供 WebUI 热配置和后台 Anchor 创建。
 
 ### Pro / Flash 独立配置
 
-默认的 `GATEWAY_INSTANCE_MODE=split` 会让同一个 Node.js 进程建立三个互相隔离的监听：
+默认的 `GATEWAY_INSTANCE_MODE=split` 会建立一个管理父进程和两个受监管的数据子进程，共三个互相隔离的监听：
 
 | 用途 | 默认地址 | 是否转发模型请求 |
 | --- | --- | --- |
@@ -58,7 +67,7 @@ WebUI 与 Gateway 由同一个 Node.js 进程提供，不需要安装或启动�
 | V4 Pro 数据面 | `http://127.0.0.1:8643/v1` | 是，只接受 `deepseek-v4-pro` |
 | V4 Flash 数据面 | `http://127.0.0.1:8644/v1` | 是，只接受 `deepseek-v4-flash` |
 
-Pro 与 Flash 分别使用 `GATEWAY_PRO_UPSTREAM_API_KEY` 和 `GATEWAY_FLASH_UPSTREAM_API_KEY`，也能分别设置端口、Host、上游地址、增强模式、Anchor 和日志目录。专用值留空时会回退到共享配置；页面会明确区分“独立 Key”和“继承共享 Key”，两者不必使用同一个 Key 或端口。Flash 默认关闭，因为启用 Anchor 模式前必须先提供由 Flash 自身生成的 Anchor。
+Pro 与 Flash 分别使用 `GATEWAY_PRO_UPSTREAM_API_KEY` 和 `GATEWAY_FLASH_UPSTREAM_API_KEY`，也能分别设置端口、Host、上游地址、增强模式、Anchor 和日志目录。专用值留空时会回退到共享配置；页面会明确区分“独立 Key”和“继承共享 Key”，两者不必使用同一个 Key 或端口。两者默认都启用 Anchor 模式。Flash 初始绑定一份明确标记为“Pro 复制基线”的临时 Artifact，方便先联调；它不冒充 Flash 灰测结果，正式使用时应在 WebUI 中生成并切换到 Flash 原生 Anchor。
 
 最小拆分配置示例：
 
@@ -73,12 +82,12 @@ GATEWAY_PRO_UPSTREAM_API_KEY=your-pro-key
 GATEWAY_FLASH_ENABLED=true
 GATEWAY_FLASH_PORT=8644
 GATEWAY_FLASH_UPSTREAM_API_KEY=your-flash-key
-GATEWAY_FLASH_ANCHOR_PATH=anchors/your-flash-anchor.json
+GATEWAY_FLASH_ANCHOR_PATH=anchors/dsh-minimal-open-workstream-two-tool-v2-flash-copy.json
 ```
 
-split 模式下 WebUI 从独立管理端口聚合两边统计，数据端口不会提供页面或公开诊断接口。默认日志也会拆到 `results/gateway/pro/` 和 `results/gateway/flash/`，避免并发写入同一个文件。
+`split` 现在同时表示进程与端口隔离：WebUI/管理父进程、Pro 子进程、Flash 子进程分开运行，模型、Key、Anchor 和流量不会混用。父进程通过本机 IPC 聚合统计并管理子进程生命周期；数据端口不会提供页面或公开诊断接口。默认日志也会拆到 `results/gateway/pro/` 和 `results/gateway/flash/`，避免并发写入同一个文件。
 
-WebUI 保存的覆盖项写入本机 `gateway.config.json`（已加入 `.gitignore`，权限设为仅当前用户），保存后只重启对应数据监听并立即生效；管理页面不会中断。Key 字段留空会保留现有值，只有勾选“清除现有 Key”才会删除。管理 API 和页面都只返回 `apiKeyConfigured`/来源状态，不回传 Key 明文。
+WebUI 保存的覆盖项写入本机 `gateway.config.json`（已加入 `.gitignore`，权限设为仅当前用户），保存后只重启对应数据监听并立即生效；管理页面不会中断。Key 字段留空会保留现有值，只有勾选“清除现有 Key”才会删除。管理 API 和页面只返回 `apiKeyConfigured`、来源状态和前 7/后 4 位脱敏预览，不回传 Key 明文。
 
 如果设置了 `GATEWAY_MANAGEMENT_TOKEN`，WebUI 会提示输入管理令牌；令牌只保存在当前标签页的 `sessionStorage`，不写入 URL、仓库或磁盘。默认 loopback 配置无需令牌。
 
@@ -91,13 +100,13 @@ WebUI 保存的覆盖项写入本机 `gateway.config.json`（已加入 `.gitigno
 
 默认服务模式为 `anchor`。它在 Chat Completions 请求前追加冻结的开放式双工具 Anchor 历史：一项长期工程问题以 `bash → str_replace_editor` 开始，轨迹停在第二个工具结果，没有总结或结束答复；随后用“我们继续工作”衔接原 Harness system 与会话历史。Gateway 原样保留 model 和当前 tools，历史中的 bootstrap 工具 schema 不会加入当前工具目录。普通 JSON 和 SSE 均边接收边转发。
 
-Anchor 按模型严格隔离。仓库内置的是 `deepseek-v4-pro` Artifact；请求 `deepseek-v4-flash` 时，如果没有配置由 Flash 自身生成的 Artifact，Gateway 会返回明确的 `gateway_anchor_not_configured`，不会复用 Pro Anchor。可用两个端口分别启动两个实例，也可以在同一实例的 `GATEWAY_MODELS` 中配置两个模型。
+Anchor 按模型严格隔离。仓库内置 Pro Artifact，并附带一份绑定为 Flash、同时记录 Pro 来源的复制基线；Gateway 不会把 Pro Artifact 文件直接误绑到 Flash。WebUI 只会在对应模型的下拉框中列出校验通过的 Artifact。可用两个端口分别启动两个实例，也可以在同一实例的 `GATEWAY_MODELS` 中配置两个模型。
 
 设置 `GATEWAY_ENHANCEMENT_MODE=bypass` 可全局旁路；单个请求也可用 `x-deepseek-boost-mode: bypass` 或 `anchor` 临时覆盖，控制头不会转发上游。Anchor 目前只变换 `/chat/completions`；其他协议路径保持透明转发，并记录为 `bypass-unsupported-path`。
 
 Harness 可以继续发送其固定格式要求的 Key，但 Gateway 会在本地丢弃它，只用 `GATEWAY_UPSTREAM_API_KEY` 构造上游 `Authorization: Bearer ...`。凭据头及 URL 中疑似密钥的查询参数不会写入日志。
 
-默认 `metadata` 日志写入 `results/gateway/traffic.jsonl`，保存注入前后消息数、Anchor ID、reasoning/正文长度、轨迹短语、历史与当前工具调用、结束原因、客户端断流、传输错误和用量，不保存原始提示或回复。`full` 模式会额外保存完整请求和响应，可能含用户提示、代码与工具输出，只应用于本机调试。日志默认每个 64 MiB 轮转，保留 5 份。
+默认 `metadata` 日志写入 `results/gateway/traffic.jsonl`，保存注入前后消息数、Anchor ID、reasoning/正文长度、轨迹短语、历史与当前工具调用、结束原因、客户端断流、传输错误和用量，不保存原始提示或回复。Gateway 重启时会从当前及轮转日志恢复保存上限内的最新脱敏诊断，因此 WebUI 总体统计不会因正常重启归零。`full` 模式会额外保存完整请求和响应，可能含用户提示、代码与工具输出，只应用于本机调试；恢复到页面前仍会剥离原始 body。日志默认每个 64 MiB 轮转，保留 5 份。
 
 配置模板见 [`.env.example`](.env.example)。健康检查地址：
 
@@ -125,13 +134,15 @@ npm run gateway:inspect
 npm run gateway:inspect -- --id <request-id>
 ```
 
-机器可读接口为 `GET /__gateway/diagnostics?limit=10` 和 `GET /__gateway/diagnostics/<request-id>`；只返回统计，不返回原文。统计器复现 `modeltest` 公开分析脚本中的 `we`、`let me`、`let's`、`i`、reasoning block 长度和开头 marker，并补充当前仓库已验证的 `We need`、Standard 首行和灰测 `I am`/`I'm`/`I'am` 变体。这些值只供用户观察，不自动决定 Anchor 好坏。
+机器可读接口为 `GET /__gateway/diagnostics?limit=10` 和 `GET /__gateway/diagnostics/<request-id>`；只返回统计和最多四词/四字的开头片段，不返回完整原文。WebUI 会请求当前保存上限内的全部记录；总缓存命中率按 token 加权，即总命中 tokens 除以总命中与未命中 tokens 之和。`偏 Minimal`、`偏 Standard` 和`无明显倾向`只是短语统计分数：未达到正负阈值时显示“无明显倾向”，不是质量或能力结论。
+
+页面的“清理请求数据”会删除 Pro/Flash 的内存诊断以及当前和轮转的 `traffic`/`activity` 日志。操作先弹出风险确认，再要求准确输入“清空全部请求”；日志即使不手动清理也受单文件大小和保留份数限制，不会无限增长。
 
 `complete=false` 会进一步区分客户端主动断流、上游传输错误、没有 finish reason 或统计超过独立观测上限。原始 body 的捕获上限不会影响 SSE 轨迹统计。
 
 ## 生成 Flash 专属 Anchor
 
-推荐直接在 WebUI 的“Anchor 管理”中选择 Flash：页面会显示候选数、每候选最大轮数和最多上游调用次数；任务在后台运行，使用 Flash 配置自己的 Gateway Key 与上游地址，成功后自动保存 Artifact、绑定 Flash 并热应用。Pro 使用同一流程但生成独立 Artifact，二者不会互用。
+推荐直接在 WebUI 的“Anchor 管理”中选择模型并填写锚定提示词：页面会显示候选数、每候选最大轮数和最多上游调用次数；用户提示词会直接进入候选生成请求。任务在后台运行，使用所选配置自己的 Gateway Key 与上游地址，成功后以不可覆盖方式保存新的冻结 Artifact、绑定对应模型并热应用。内置 Pro/Flash 默认 Artifact 均标记为只读；当前 Flash 默认内容暂时来源于 Pro 基线，后续可由项目版本替换，但 WebUI 用户不能修改原文件。
 
 命令行方式仍然保留。先做不产生费用的请求预览：
 

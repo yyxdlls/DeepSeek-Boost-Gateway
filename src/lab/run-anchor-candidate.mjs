@@ -322,6 +322,8 @@ async function pathExists(path) {
 async function main() {
   const configuration = configurationFromEnvironment()
   configuration.anchor = anchorSpec(process.argv.includes('--open-workstream'))
+  const configuredUserPrompt = process.env.ANCHOR_USER_PROMPT?.trim()
+  if (configuredUserPrompt) configuration.anchor.task = configuredUserPrompt
   const configuredArtifactId = process.env.ANCHOR_ARTIFACT_ID?.trim()
   if (configuredArtifactId) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(configuredArtifactId)) {

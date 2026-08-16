@@ -66,12 +66,14 @@ function instanceConfig(server) {
   const config = server.gatewayConfig
   return {
     ...config,
+    processId: server.childPid ?? null,
     baseUrl: `http://${browserHost(config.host)}:${config.port}/v1`,
   }
 }
 
 export function createGatewayManagementServer(options = {}) {
   const config = {
+    instanceId: options.instanceId ?? null,
     version: options.version ?? null,
     host: options.host ?? '127.0.0.1',
     port: Number(options.port ?? 8642),
@@ -80,6 +82,8 @@ export function createGatewayManagementServer(options = {}) {
     profileViews: options.profileViews ?? (() => []),
     updateProfile: options.updateProfile ?? null,
     anchorJobs: options.anchorJobs ?? null,
+    listAnchors: options.listAnchors ?? null,
+    clearDiagnostics: options.clearDiagnostics ?? null,
   }
   if (!isLoopbackHost(config.host) && !config.managementToken) {
     throw new Error('A non-loopback Gateway management host requires a managementToken.')
@@ -96,6 +100,8 @@ export function createGatewayManagementServer(options = {}) {
     )
     return {
       status: 'ok',
+      processId: process.pid,
+      instanceId: config.instanceId,
       version: config.version,
       deploymentMode: 'split',
       profile: 'management',
@@ -136,7 +142,7 @@ export function createGatewayManagementServer(options = {}) {
 
     if (request.method === 'OPTIONS' && localUrl.pathname.startsWith('/__gateway/')) {
       response.statusCode = 204
-      response.setHeader('allow', 'GET, PATCH, POST, OPTIONS')
+      response.setHeader('allow', 'GET, PATCH, POST, DELETE, OPTIONS')
       response.end()
       return
     }
@@ -164,12 +170,67 @@ export function createGatewayManagementServer(options = {}) {
       return
     }
 
+    if (request.method === 'DELETE' && localUrl.pathname === '/__gateway/diagnostics') {
+      if (!config.clearDiagnostics) {
+        sendJson(response, 501, { error: { type: 'gateway_diagnostics_clear_unavailable' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Clearing diagnostics requires a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        const input = await readJson(request)
+        if (input.confirmation !== '清空全部请求') {
+          sendJson(response, 400, {
+            error: {
+              type: 'gateway_diagnostics_confirmation_required',
+              message: '必须准确输入“清空全部请求”才能删除诊断和轮转日志。',
+            },
+          })
+          return
+        }
+        const deleted = await config.clearDiagnostics()
+        sendJson(response, 200, { schemaVersion: 1, deleted })
+      } catch (error) {
+        sendJson(response, 500, {
+          error: {
+            type: 'gateway_diagnostics_clear_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
     if (request.method === 'GET' && localUrl.pathname === '/__gateway/config') {
       sendJson(response, 200, {
         schemaVersion: 1,
         deploymentMode: 'split',
         profiles: config.profileViews().map(publicProfile),
       })
+      return
+    }
+
+    if (request.method === 'GET' && localUrl.pathname === '/__gateway/anchors') {
+      try {
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          anchors: config.listAnchors ? await config.listAnchors() : [],
+        })
+      } catch (error) {
+        sendJson(response, 500, {
+          error: {
+            type: 'gateway_anchor_catalog_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
       return
     }
 

@@ -272,6 +272,7 @@ test('aggregates split data planes on a dedicated management WebUI listener', as
 test('management WebUI can update isolated profiles and start Anchor jobs without exposing keys', async () => {
   const updates = []
   const jobs = []
+  let cleared = 0
   const profiles = [{
     name: 'pro',
     model: 'deepseek-v4-pro',
@@ -294,6 +295,10 @@ test('management WebUI can update isolated profiles and start Anchor jobs withou
         jobs.push(job)
         return job
       },
+    },
+    clearDiagnostics: async () => {
+      cleared += 2
+      return 2
     },
   })
   const address = await listenGateway(management, '127.0.0.1', 0)
@@ -332,12 +337,39 @@ test('management WebUI can update isolated profiles and start Anchor jobs withou
         'content-type': 'application/json',
         'x-gateway-management-request': '1',
       },
-      body: JSON.stringify({ profile: 'pro', runs: 3 }),
+      body: JSON.stringify({
+        profile: 'pro',
+        runs: 3,
+        anchorPrompt: 'Inspect the synthetic workstream with both tools before continuing.',
+      }),
     })
     assert.equal(started.status, 202)
     const job = await started.json()
     assert.equal(job.job.profile, 'pro')
     assert.equal(job.job.status, 'running')
+
+    const refusedClear = await fetch(`${origin}/__gateway/diagnostics`, {
+      method: 'DELETE',
+      headers: {
+        'content-type': 'application/json',
+        'x-gateway-management-request': '1',
+      },
+      body: JSON.stringify({ confirmation: 'yes' }),
+    })
+    assert.equal(refusedClear.status, 400)
+    assert.equal(cleared, 0)
+
+    const acceptedClear = await fetch(`${origin}/__gateway/diagnostics`, {
+      method: 'DELETE',
+      headers: {
+        'content-type': 'application/json',
+        'x-gateway-management-request': '1',
+      },
+      body: JSON.stringify({ confirmation: '清空全部请求' }),
+    })
+    assert.equal(acceptedClear.status, 200)
+    assert.equal((await acceptedClear.json()).deleted, 2)
+    assert.equal(cleared, 2)
   } finally {
     await close(management)
   }

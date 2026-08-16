@@ -57,6 +57,13 @@ function openingStyle(text) {
   return 'other'
 }
 
+function openingPreview(text) {
+  const trimmed = text.trimStart().replace(/\s+/gu, ' ')
+  if (!trimmed) return ''
+  if (/^\p{Script=Han}/u.test(trimmed)) return [...trimmed].slice(0, 4).join('')
+  return trimmed.split(' ').slice(0, 4).join(' ')
+}
+
 function trajectoryLabel(text, markers, opening) {
   let score = 0
   if (opening === 'we-need') score += 3
@@ -123,6 +130,7 @@ export function summarizeTextBlocks(blocks) {
     markerProfile: TRAJECTORY_MARKER_PROFILE.id,
     markers,
     openingStyle: opening,
+    openingPreview: openingPreview(primaryText),
     trajectory: trajectoryLabel(primaryText, markers, opening),
   }
 }
@@ -182,6 +190,53 @@ function responseState() {
     finishReasons: new Set(),
     usage: null,
     parseErrors: 0,
+  }
+}
+
+function nonNegativeNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const number = nonNegativeNumber(value)
+    if (number !== null) return number
+  }
+  return null
+}
+
+export function summarizeCacheUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null
+
+  let hitTokens = firstNumber(
+    usage.prompt_cache_hit_tokens,
+    usage.prompt_tokens_details?.cached_tokens,
+    usage.cache_read_input_tokens,
+  )
+  let missTokens = firstNumber(
+    usage.prompt_cache_miss_tokens,
+  )
+  const promptTokens = firstNumber(usage.prompt_tokens, usage.input_tokens)
+
+  if (hitTokens === null && missTokens === null) return null
+  if (hitTokens === null && promptTokens !== null && missTokens !== null) {
+    hitTokens = Math.max(0, promptTokens - missTokens)
+  }
+  if (missTokens === null && promptTokens !== null && hitTokens !== null) {
+    missTokens = Math.max(0, promptTokens - hitTokens)
+  }
+  if (hitTokens === null) hitTokens = 0
+  if (missTokens === null) {
+    missTokens = firstNumber(usage.input_tokens, usage.cache_creation_input_tokens) ?? 0
+  }
+
+  const totalTokens = hitTokens + missTokens
+  return {
+    hitTokens,
+    missTokens,
+    totalTokens,
+    hitRate: totalTokens > 0 ? hitTokens / totalTokens : null,
   }
 }
 
@@ -282,6 +337,7 @@ function finishResponseState(state, format, options = {}) {
     },
     finishReasons,
     usage: state.usage,
+    cache: summarizeCacheUsage(state.usage),
     markerProfile: TRAJECTORY_MARKER_PROFILE.id,
     diagnosticOnly: true,
     reasoningChars: reasoning.chars,

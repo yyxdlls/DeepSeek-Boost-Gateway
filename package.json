@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test",
     "start": "node src/gateway/server.mjs",
+    "stop": "node scripts/stop-gateway.mjs",
     "launch": "node scripts/launch-gateway.mjs",
     "gateway": "node src/gateway/server.mjs",
     "gateway:inspect": "node src/gateway/inspect.mjs",

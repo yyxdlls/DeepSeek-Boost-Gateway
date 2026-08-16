@@ -26,6 +26,7 @@ function publicJob(job) {
     maxSubturns: job.maxSubturns,
     maxTokens: job.maxTokens,
     maximumUpstreamCalls: job.runs * job.maxSubturns,
+    anchorPromptChars: job.anchorPrompt.length,
     anchorId: job.anchorId,
     artifactPath: job.artifactPath,
     activated: job.activated,
@@ -49,6 +50,7 @@ function runBuilder(job, profile) {
         ANCHOR_MAX_TOKENS: String(job.maxTokens),
         ANCHOR_ARTIFACT_ID: job.anchorId,
         ANCHOR_OUTPUT_PATH: job.artifactPath,
+        ANCHOR_USER_PROMPT: job.anchorPrompt,
       },
     })
     job.child = child
@@ -104,6 +106,10 @@ export class AnchorJobManager {
     }
 
     const id = randomUUID()
+    const anchorPrompt = String(input.anchorPrompt ?? '').trim()
+    if (anchorPrompt.length < 20 || anchorPrompt.length > 8_000) {
+      throw new Error('anchorPrompt must contain 20 to 8000 characters.')
+    }
     const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
     const anchorId = `${profile.models[0]}-open-workstream-${timestamp}-${id.slice(0, 8)}`
     const job = {
@@ -117,6 +123,7 @@ export class AnchorJobManager {
       runs: integer(input.runs, 3, 1, 10, 'runs'),
       maxSubturns: integer(input.maxSubturns, 6, 2, 12, 'maxSubturns'),
       maxTokens: integer(input.maxTokens, 384_000, 1, 384_000, 'maxTokens'),
+      anchorPrompt,
       anchorId,
       artifactPath: resolve('anchors', `${anchorId}.json`),
       activated: false,

@@ -13,11 +13,13 @@ const elements = {
   requestRows: $('request-rows'),
   requestEmpty: $('request-empty'),
   requestCount: $('request-count'),
+  clearDiagnostics: $('clear-diagnostics'),
   detailPanel: $('detail-panel'),
   anchorList: $('anchor-list'),
   anchorJobs: $('anchor-jobs'),
   anchorForm: $('anchor-form'),
   anchorProfile: $('anchor-profile'),
+  anchorPrompt: $('anchor-prompt'),
   anchorRuns: $('anchor-runs'),
   anchorSubturns: $('anchor-subturns'),
   anchorMaxTokens: $('anchor-max-tokens'),
@@ -37,7 +39,9 @@ const state = {
   entries: [],
   markerProfile: null,
   config: null,
+  anchorCatalog: [],
   jobs: [],
+  retained: 0,
   selectedId: null,
   loading: false,
   token: sessionStorage.getItem('gateway-management-token') ?? '',
@@ -74,6 +78,73 @@ function formatDuration(value) {
   if (milliseconds < 1000) return `${milliseconds} ms`
   if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`
   return `${Math.floor(milliseconds / 60_000)}m ${Math.round((milliseconds % 60_000) / 1000)}s`
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(Number(value))) return '—'
+  const percent = Number(value) * 100
+  return `${percent.toFixed(percent >= 99.95 || percent === 0 ? 0 : 1)}%`
+}
+
+function cacheUsage(summary) {
+  if (summary?.cache && Number.isFinite(Number(summary.cache.hitTokens))) {
+    return summary.cache
+  }
+  const usage = summary?.usage
+  if (!usage || typeof usage !== 'object') return null
+  const numeric = (...values) => {
+    for (const value of values) {
+      const number = Number(value)
+      if (Number.isFinite(number) && number >= 0) return number
+    }
+    return null
+  }
+  let hitTokens = numeric(
+    usage.prompt_cache_hit_tokens,
+    usage.prompt_tokens_details?.cached_tokens,
+    usage.cache_read_input_tokens,
+  )
+  let missTokens = numeric(usage.prompt_cache_miss_tokens)
+  const promptTokens = numeric(usage.prompt_tokens, usage.input_tokens)
+  if (hitTokens === null && missTokens === null) return null
+  if (hitTokens === null && promptTokens !== null) hitTokens = Math.max(0, promptTokens - missTokens)
+  if (missTokens === null && promptTokens !== null) missTokens = Math.max(0, promptTokens - hitTokens)
+  hitTokens ??= 0
+  missTokens ??= 0
+  const totalTokens = hitTokens + missTokens
+  return { hitTokens, missTokens, totalTokens, hitRate: totalTokens ? hitTokens / totalTokens : null }
+}
+
+function aggregateCache(entries) {
+  let hitTokens = 0
+  let missTokens = 0
+  let requests = 0
+  for (const entry of entries) {
+    const cache = cacheUsage(entry.response?.summary)
+    if (!cache) continue
+    hitTokens += Number(cache.hitTokens ?? 0)
+    missTokens += Number(cache.missTokens ?? 0)
+    requests += 1
+  }
+  const totalTokens = hitTokens + missTokens
+  return { hitTokens, missTokens, totalTokens, requests, hitRate: totalTokens ? hitTokens / totalTokens : null }
+}
+
+const trajectoryLabels = {
+  'minimal-like': '偏 Minimal',
+  'standard-like': '偏 Standard',
+  ambiguous: '无明显倾向',
+}
+
+function trajectoryLabel(value) {
+  return trajectoryLabels[value] ?? value ?? '未分类'
+}
+
+function openingPreview(reasoning) {
+  if (!reasoning) return '—'
+  if (reasoning.openingPreview) return reasoning.openingPreview
+  if (reasoning.chars === 0) return '无推理文本'
+  return '历史记录未保存片段'
 }
 
 function shortId(value, length = 10) {
@@ -213,22 +284,23 @@ function renderMetrics() {
     (sum, entry) => sum + Number(entry.response?.summary?.reasoning?.markers?.letMe ?? 0),
     0,
   )
-  $('metric-mode').textContent = health?.mode ?? '—'
+  const totalCache = aggregateCache(state.entries)
+  $('metric-mode').textContent = health?.deploymentMode === 'split' ? '父子进程' : health?.mode ?? '—'
   $('metric-mode-note').textContent = health
     ? !health.gatewayApiKeyConfigured
       ? '数据面等待 Gateway Key'
       : health.deploymentMode === 'split'
-        ? `${instances.length} 个独立数据端口`
+        ? `1 个管理父进程 + ${instances.length} 个模型子进程`
         : health.mode === 'anchor' ? 'Chat Completions 默认增强' : '默认透明旁路'
     : '等待 Gateway'
   $('metric-anchors').textContent = health ? formatNumber(health.anchors?.length ?? 0) : '—'
   $('metric-anchor-note').textContent = health?.anchors?.length
     ? health.anchors.map((anchor) => anchor.model).join(' · ')
     : '模型严格隔离'
-  $('metric-retained').textContent = state.health ? formatNumber(state.entries.length) : '—'
+  $('metric-retained').textContent = state.health ? formatNumber(state.retained) : '—'
   $('metric-retained-note').textContent = health
-    ? `上限 ${formatNumber(health.diagnosticHistoryLimit)}`
-    : '内存诊断记录'
+    ? `含重启恢复，上限 ${formatNumber(health.diagnosticHistoryLimit)}`
+    : '从轮转日志恢复的诊断记录'
   $('metric-complete').textContent = state.entries.length
     ? `${Math.round((complete / state.entries.length) * 100)}%`
     : '—'
@@ -243,6 +315,10 @@ function renderMetrics() {
   $('metric-tools-note').textContent = state.entries.length
     ? `工具 ${toolCalls} 次 · Let me ${letMe} 次`
     : '当前可见回复汇总'
+  $('metric-cache').textContent = formatPercent(totalCache.hitRate)
+  $('metric-cache-note').textContent = totalCache.requests
+    ? `${formatNumber(totalCache.hitTokens)} / ${formatNumber(totalCache.totalTokens)} tokens · ${totalCache.requests} 条有缓存数据`
+    : '上游尚未返回缓存 token 数据'
 }
 
 function renderRows() {
@@ -251,6 +327,7 @@ function renderRows() {
     const status = requestState(entry)
     const summary = entry.response?.summary
     const tools = currentToolNames(entry)
+    const cache = cacheUsage(summary)
     const modeClass = String(entry.mode ?? '').startsWith('anchor') ? 'anchor' : ''
     return `
       <tr data-request-id="${escapeHtml(entry.requestId)}" tabindex="0" class="${entry.requestId === state.selectedId ? 'selected' : ''}" aria-label="查看请求 ${escapeHtml(entry.requestId)}">
@@ -262,7 +339,11 @@ function renderRows() {
         <td><span class="mode-label ${modeClass}">${escapeHtml(entry.mode ?? '—')}</span></td>
         <td>
           <span class="cell-primary">${formatNumber(summary?.reasoning?.chars ?? summary?.reasoningChars)}</span>
-          <span class="cell-secondary">${escapeHtml(summary?.reasoning?.openingStyle ?? '—')}</span>
+          <span class="cell-secondary" title="英文保留前四个词，中文保留前四个字">${escapeHtml(openingPreview(summary?.reasoning))}</span>
+        </td>
+        <td>
+          <span class="cell-primary">${formatPercent(cache?.hitRate)}</span>
+          <span class="cell-secondary">${cache ? `${formatNumber(cache.hitTokens)} / ${formatNumber(cache.totalTokens)} tokens` : '上游未提供'}</span>
         </td>
         <td>${tools.length ? renderTools(tools) : '<span class="muted">无</span>'}</td>
       </tr>`
@@ -271,7 +352,7 @@ function renderRows() {
   elements.requestEmpty.hidden = entries.length > 0
   elements.requestCount.textContent = state.entries.length
     ? `显示 ${entries.length} 条，共保留 ${state.entries.length} 条 · 详情仅包含统计，不包含提示或回复原文`
-    : '诊断记录保存在 Gateway 内存中；服务重启后会清空'
+    : '暂无已保存诊断记录；完成或中断的请求会写入轮转日志'
 }
 
 function markerLabel(id) {
@@ -291,7 +372,7 @@ function renderMarkers(markers) {
 
 function trajectoryBadge(trajectory) {
   if (!trajectory?.label) return '<span class="trajectory-label">未分类</span>'
-  return `<span class="trajectory-label">${escapeHtml(trajectory.label)} · ${formatNumber(trajectory.score)}</span>`
+  return `<span class="trajectory-label" title="根据轨迹短语计算的观察分数；未达到 ±4 阈值时显示无明显倾向">${escapeHtml(trajectoryLabel(trajectory.label))} · ${formatNumber(trajectory.score)}</span>`
 }
 
 function summaryBlock(title, scope, summary, note = '') {
@@ -300,6 +381,7 @@ function summaryBlock(title, scope, summary, note = '') {
   }
   const reasoning = summary.reasoning ?? {}
   const content = summary.content ?? {}
+  const cache = cacheUsage(summary)
   return `
     <section class="detail-block">
       <div class="detail-block-heading">
@@ -311,9 +393,10 @@ function summaryBlock(title, scope, summary, note = '') {
         <div class="mini-metric"><span>推理字符</span><strong>${formatNumber(reasoning.chars ?? summary.reasoningChars)}</strong></div>
         <div class="mini-metric"><span>UTF-8 字节</span><strong>${formatNumber(reasoning.utf8Bytes)}</strong></div>
         <div class="mini-metric"><span>正文字符</span><strong>${formatNumber(content.chars ?? summary.contentChars)}</strong></div>
-        <div class="mini-metric"><span>开头样式</span><strong title="${escapeHtml(reasoning.openingStyle ?? '—')}">${escapeHtml(reasoning.openingStyle ?? '—')}</strong></div>
+        <div class="mini-metric"><span title="英文保留前四个词，中文保留前四个字">开头四词 / 四字</span><strong>${escapeHtml(openingPreview(reasoning))}</strong></div>
         <div class="mini-metric"><span>推理块</span><strong>${formatNumber(reasoning.nonEmptyBlocks ?? reasoning.blocks)}</strong></div>
-        <div class="mini-metric"><span>轨迹分类</span><strong>${escapeHtml(reasoning.trajectory?.label ?? '—')}</strong></div>
+        <div class="mini-metric"><span title="分数未达到 ±4 时为无明显倾向">轨迹倾向 ⓘ</span><strong>${escapeHtml(trajectoryLabel(reasoning.trajectory?.label))}</strong></div>
+        ${cache ? `<div class="mini-metric"><span>缓存命中率</span><strong>${formatPercent(cache.hitRate)}</strong></div>` : ''}
       </div>
       <p class="subheading">关键字命中</p>
       ${renderMarkers(reasoning.markers)}
@@ -339,6 +422,7 @@ function renderDetail() {
   const anchorHistory = entry.transformation?.anchorHistory
   const requestHistory = entry.request?.history
   const usage = responseSummary?.usage
+  const cache = cacheUsage(responseSummary)
   const usageRows = usage && typeof usage === 'object'
     ? Object.entries(usage).map(([name, value]) => `<div><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(typeof value === 'object' ? JSON.stringify(value) : value)}</dd></div>`).join('')
     : '<div><dt>Token usage</dt><dd>上游未返回</dd></div>'
@@ -360,6 +444,7 @@ function renderDetail() {
         ${entry.profile ? `<span class="mode-label">${escapeHtml(entry.profile)}</span>` : ''}
         <span class="mode-label ${String(entry.mode ?? '').startsWith('anchor') ? 'anchor' : ''}">${escapeHtml(entry.mode ?? '—')}</span>
         <span class="mode-label">${escapeHtml(formatDuration(entry.durationMs))}</span>
+        ${cache ? `<span class="mode-label cache">缓存 ${formatPercent(cache.hitRate)}</span>` : ''}
       </div>
     </div>
     ${summaryBlock('本次回复', 'current_response', responseSummary, '只统计这一次上游新生成的内容。')}
@@ -375,6 +460,7 @@ function renderDetail() {
         <div><dt>Finish reason</dt><dd>${escapeHtml(responseSummary?.finishReasons?.join(', ') || '—')}</dd></div>
         <div><dt>客户端断流</dt><dd>${entry.response?.abortedByClient ? '是' : '否'}</dd></div>
         <div><dt>观测完整</dt><dd>${responseSummary?.observationComplete === false ? '否' : responseSummary ? '是' : '—'}</dd></div>
+        <div><dt>缓存命中率</dt><dd>${cache ? `${formatPercent(cache.hitRate)} · 命中 ${formatNumber(cache.hitTokens)} / ${formatNumber(cache.totalTokens)} 提示 tokens` : '上游未提供缓存 token 数据'}</dd></div>
         <div><dt>错误</dt><dd>${escapeHtml(entry.response?.transportError ?? entry.response?.error ?? '无')}</dd></div>
         ${usageRows}
       </dl>
@@ -400,7 +486,18 @@ function renderProfiles() {
     elements.profileList.innerHTML = '<p class="muted">当前服务不是可管理的 split 模式。请用一键脚本启动默认的管理/数据分离部署。</p>'
     return
   }
-  elements.profileList.innerHTML = profiles.map((profile) => `
+  elements.profileList.innerHTML = profiles.map((profile) => {
+    const keyPreview = profile.apiKeyPreview
+      ? `<small class="key-preview">当前保存：<code>${escapeHtml(profile.apiKeyPreview)}</code></small>`
+      : '<small class="key-preview empty">当前未保存 Key</small>'
+    const availableAnchors = state.anchorCatalog.filter((anchor) => anchor.model === profile.model)
+    if (profile.anchorPath && !availableAnchors.some((anchor) => anchor.path === profile.anchorPath)) {
+      availableAnchors.unshift({ id: '当前配置（目录中未发现）', path: profile.anchorPath })
+    }
+    const anchorOptions = availableAnchors.length
+      ? availableAnchors.map((anchor) => `<option value="${escapeHtml(anchor.path)}" ${anchor.path === profile.anchorPath ? 'selected' : ''}>${escapeHtml(anchor.id)}${anchor.bundledDefault ? ' · 内置只读' : ' · 已冻结'}</option>`).join('')
+      : '<option value="" selected disabled>没有可用的模型专属 Anchor</option>'
+    return `
     <article class="profile-card">
       <div class="profile-title">
         <div><strong>${escapeHtml(profile.name)}</strong><small>${escapeHtml(profile.model)}</small></div>
@@ -412,14 +509,15 @@ function renderProfiles() {
           <label><span>数据端口</span><input name="port" type="number" min="1" max="65535" value="${escapeHtml(profile.port)}" required></label>
           <label><span>增强模式</span><select name="enhancementMode"><option value="anchor" ${profile.enhancementMode === 'anchor' ? 'selected' : ''}>anchor</option><option value="bypass" ${profile.enhancementMode === 'bypass' ? 'selected' : ''}>bypass</option></select></label>
           <label class="wide"><span>上游 Base URL</span><input name="upstreamBaseUrl" type="url" value="${escapeHtml(profile.upstreamBaseUrl)}" required spellcheck="false"></label>
-          <label class="wide"><span>Gateway API Key</span><input name="apiKey" type="password" value="" placeholder="${profile.apiKeyConfigured ? profile.apiKeySource === 'shared-fallback' ? '当前继承共享 Key；输入后改为独立 Key' : '已独立配置；留空保持不变' : '尚未配置'}" autocomplete="new-password" spellcheck="false"></label>
-          <label class="wide"><span>模型专属 Anchor 路径</span><input name="anchorPath" type="text" value="${escapeHtml(profile.anchorPath ?? '')}" placeholder="anchors/...json" spellcheck="false"></label>
+          <label class="wide"><span>Gateway API Key</span><input name="apiKey" type="password" value="" placeholder="${profile.apiKeyConfigured ? profile.apiKeySource === 'shared-fallback' ? '当前继承共享 Key；输入后改为独立 Key' : '输入新 Key 可替换；留空保持不变' : '尚未配置'}" autocomplete="new-password" spellcheck="false">${keyPreview}</label>
+          <label class="wide"><span>模型专属 Anchor</span><select name="anchorPath" required>${anchorOptions}</select></label>
           <label class="toggle-field wide"><input name="clearApiKey" type="checkbox"><span>保存时清除现有 Key</span></label>
         </div>
-        <p class="form-note">Key 只写入本机 <code>gateway.config.json</code>，页面永远读不回明文；Harness 自带 Key 会被丢弃。</p>
+        <p class="form-note">Key 只写入本机 <code>gateway.config.json</code>，页面只读取脱敏预览、绝不回传明文；Harness 自带 Key 会被丢弃。</p>
         <button class="button primary" type="submit">保存并热应用 ${escapeHtml(profile.name.toUpperCase())}</button>
       </form>
-    </article>`).join('')
+    </article>`
+  }).join('')
 }
 
 const jobStatusLabels = {
@@ -438,7 +536,7 @@ function renderAnchorJobs() {
     <div class="job-card">
       <div>
         <strong>${escapeHtml(job.profile.toUpperCase())} · ${escapeHtml(job.anchorId)}</strong>
-        <small>${job.error ? escapeHtml(job.error) : `${job.runs} 个候选 · 最多 ${job.maximumUpstreamCalls} 次请求${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}`}</small>
+        <small>${job.error ? escapeHtml(job.error) : `${job.runs} 个候选 · 提示词 ${formatNumber(job.anchorPromptChars)} 字符 · 最多 ${job.maximumUpstreamCalls} 次请求${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}`}</small>
       </div>
       <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(jobStatusLabels[job.status] ?? job.status)}</span>
     </div>`).join('')
@@ -467,10 +565,11 @@ function renderConfig() {
   if (health.deploymentMode === 'split') {
     elements.configList.innerHTML = `
       <div><dt>管理界面</dt><dd>${escapeHtml(location.origin)}</dd></div>
-      <div><dt>部署模式</dt><dd>split · 管理/数据分离</dd></div>
+      <div><dt>管理父进程</dt><dd>PID ${escapeHtml(health.processId ?? '—')} · 结束后自动清理模型子进程</dd></div>
+      <div><dt>部署模式</dt><dd>父子进程 · WebUI 管理父进程分别监管 Pro、Flash 子进程</dd></div>
       ${instances.map((instance) => `
-        <div><dt>${escapeHtml(instance.profile)} 数据面</dt><dd>${escapeHtml(instance.baseUrl)}</dd></div>
-        <div><dt>${escapeHtml(instance.profile)} Key</dt><dd>${instance.gatewayApiKeyConfigured ? instance.gatewayApiKeySource === 'shared-fallback' ? '已配置 · 当前继承共享 Key' : '已独立配置' : '未配置 · 该端口不可用'}</dd></div>
+        <div><dt>${escapeHtml(instance.profile)} 数据面</dt><dd>${escapeHtml(instance.baseUrl)} · 子进程 PID ${escapeHtml(instance.processId ?? '—')}</dd></div>
+        <div><dt>${escapeHtml(instance.profile)} Key</dt><dd>${instance.gatewayApiKeyConfigured ? `${instance.gatewayApiKeySource === 'shared-fallback' ? '继承共享 Key' : '独立 Key'} · ${escapeHtml(instance.gatewayApiKeyPreview ?? '已配置')}` : '未配置 · 该端口不可用'}</dd></div>
       `).join('')}
       <div><dt>凭据策略</dt><dd>${escapeHtml(health.credentialPolicy ?? 'gateway-only')}</dd></div>
       <div><dt>版本</dt><dd>v${escapeHtml(health.version ?? '—')}</dd></div>`
@@ -506,16 +605,19 @@ async function loadData({ quiet = false } = {}) {
   if (!quiet) setConnection('waiting', '正在连接')
   elements.refreshButton.disabled = true
   try {
-    const [health, diagnostics, config, jobs] = await Promise.all([
+    const [health, diagnostics, config, jobs, anchorCatalog] = await Promise.all([
       fetchJson('/__gateway/health'),
-      fetchJson('/__gateway/diagnostics?limit=100'),
+      fetchJson('/__gateway/diagnostics?limit=500'),
       fetchOptionalJson('/__gateway/config', { profiles: [] }),
       fetchOptionalJson('/__gateway/anchors/jobs', { jobs: [] }),
+      fetchOptionalJson('/__gateway/anchors', { anchors: [] }),
     ])
     state.health = health
     state.config = config
     state.jobs = Array.isArray(jobs.jobs) ? jobs.jobs : []
+    state.anchorCatalog = Array.isArray(anchorCatalog.anchors) ? anchorCatalog.anchors : []
     state.entries = Array.isArray(diagnostics.entries) ? diagnostics.entries : []
+    state.retained = Number(diagnostics.retained ?? state.entries.length)
     state.markerProfile = diagnostics.markerProfile ?? health.trajectoryMarkerProfile ?? null
     if (!state.entries.some((entry) => entry.requestId === state.selectedId)) {
       state.selectedId = state.entries[0]?.requestId ?? null
@@ -614,6 +716,7 @@ elements.anchorForm.addEventListener('submit', async (event) => {
   const runs = Number(elements.anchorRuns.value)
   const maxSubturns = Number(elements.anchorSubturns.value)
   const maxTokens = Number(elements.anchorMaxTokens.value)
+  const anchorPrompt = elements.anchorPrompt.value.trim()
   const maximumCalls = runs * maxSubturns
   if (!window.confirm(`将为 ${profile.toUpperCase()} 生成专属 Anchor，最多发起 ${maximumCalls} 次计费上游请求。继续吗？`)) return
   const submit = elements.anchorForm.querySelector('button[type="submit"]')
@@ -622,7 +725,7 @@ elements.anchorForm.addEventListener('submit', async (event) => {
   try {
     const result = await fetchJson('/__gateway/anchors/jobs', {
       method: 'POST',
-      body: { profile, runs, maxSubturns, maxTokens },
+      body: { profile, runs, maxSubturns, maxTokens, anchorPrompt },
     })
     state.jobs = [result.job, ...state.jobs]
     renderAnchorControls()
@@ -637,6 +740,28 @@ elements.anchorForm.addEventListener('submit', async (event) => {
 
 elements.searchInput.addEventListener('input', renderRows)
 elements.statusFilter.addEventListener('change', renderRows)
+elements.clearDiagnostics.addEventListener('click', async () => {
+  if (!window.confirm('这会永久删除 Pro/Flash 的已保存请求统计、traffic 日志和 activity 日志，无法恢复。确定继续吗？')) return
+  const confirmation = window.prompt('为防止误删，请准确输入：清空全部请求')
+  if (confirmation !== '清空全部请求') {
+    toast('确认文字不匹配，未清理任何数据')
+    return
+  }
+  elements.clearDiagnostics.disabled = true
+  try {
+    const result = await fetchJson('/__gateway/diagnostics', {
+      method: 'DELETE',
+      body: { confirmation },
+    })
+    toast(`已清理 ${formatNumber(result.deleted)} 条请求记录`)
+    state.selectedId = null
+    await loadData({ quiet: true })
+  } catch (error) {
+    toast(`清理失败：${error.message}`)
+  } finally {
+    elements.clearDiagnostics.disabled = false
+  }
+})
 elements.refreshButton.addEventListener('click', () => loadData())
 elements.copyEndpoint.addEventListener('click', () => copyText(endpointCopyValue(), 'Harness Base URL 已复制'))
 elements.tokenButton.addEventListener('click', () => {

@@ -1,7 +1,13 @@
 @echo off
+if /I "%~1"=="--attached" goto :attached
+start "DeepSeek Boost Gateway" "%ComSpec%" /d /k ""%~f0" --attached"
+exit /b 0
+
+:attached
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0"
+title DeepSeek Boost Gateway - http://127.0.0.1:8642/
 
 echo.
 echo  DeepSeek Boost Gateway
@@ -49,8 +55,9 @@ if "%RUNTIME_DEPS%"=="0" (
 )
 
 echo [4/4] Starting Gateway. Keep this window open.
-echo       WebUI: http://127.0.0.1:8642/
+echo       Current page: http://127.0.0.1:8642/
 echo       Configured data API endpoints will be printed below.
+echo       Closing this terminal stops the Gateway started here.
 echo.
 if /I "%GATEWAY_NO_OPEN%"=="1" (
   node "scripts\launch-gateway.mjs" --no-open

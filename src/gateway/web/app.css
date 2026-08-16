@@ -43,7 +43,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   color: inherit;
   font: inherit;
 }
@@ -56,6 +57,7 @@ select {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
@@ -121,7 +123,7 @@ code {
   background: linear-gradient(145deg, rgba(85, 228, 220, 0.14), rgba(85, 228, 220, 0.03));
   box-shadow: inset 0 0 18px rgba(85, 228, 220, 0.08);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.08em;
 }
@@ -132,14 +134,14 @@ code {
 }
 
 .brand strong {
-  font-size: 14px;
+  font-size: 21px;
   letter-spacing: 0.01em;
 }
 
 .brand small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 15px;
   letter-spacing: 0.17em;
   text-transform: uppercase;
 }
@@ -161,7 +163,7 @@ code {
   border-radius: 999px;
   color: var(--muted);
   background: rgba(255, 255, 255, 0.025);
-  font-size: 12px;
+  font-size: 18px;
 }
 
 .status-dot {
@@ -205,7 +207,7 @@ code {
 
 .button {
   padding: 7px 14px;
-  font-size: 13px;
+  font-size: 19.5px;
   font-weight: 650;
 }
 
@@ -232,6 +234,12 @@ code {
   background: transparent;
 }
 
+.button.danger {
+  color: var(--red);
+  border-color: rgba(255, 139, 131, 0.3);
+  background: rgba(255, 139, 131, 0.06);
+}
+
 .icon-button {
   width: 38px;
   padding: 0;
@@ -243,13 +251,14 @@ code {
 .icon-button::before {
   content: "⌁";
   color: var(--muted);
-  font-size: 19px;
+  font-size: 28.5px;
 }
 
 .page-shell {
-  width: min(1540px, calc(100% - clamp(28px, 6vw, 96px)));
+  width: calc((100% - 24px) / 0.85);
   margin: 0 auto;
   padding: clamp(42px, 6vw, 84px) 0 36px;
+  zoom: 0.85;
 }
 
 .intro {
@@ -265,7 +274,7 @@ code {
   margin: 0 0 9px;
   color: var(--cyan);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.19em;
 }
@@ -280,7 +289,7 @@ p {
 h1 {
   max-width: 700px;
   margin-bottom: 14px;
-  font-size: clamp(34px, 5vw, 64px);
+  font-size: clamp(40px, 5vw, 64px);
   font-weight: 680;
   letter-spacing: -0.045em;
   line-height: 0.98;
@@ -290,7 +299,7 @@ h1 {
   max-width: 700px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: clamp(14px, 1.4vw, 17px);
+  font-size: clamp(21px, 2.1vw, 25.5px);
   line-height: 1.7;
 }
 
@@ -311,7 +320,7 @@ h1 {
 
 .endpoint span {
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -320,19 +329,19 @@ h1 {
 .endpoint code {
   margin: 6px 0 2px;
   color: var(--cyan);
-  font-size: 12px;
+  font-size: 18px;
 }
 
 .endpoint b {
   justify-self: end;
   margin-top: -18px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 16.5px;
 }
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -368,7 +377,7 @@ h1 {
 .metric-label {
   display: block;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 18px;
 }
 
 .metric-card strong {
@@ -376,13 +385,13 @@ h1 {
   margin: 14px 0 7px;
   color: currentColor;
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: clamp(22px, 2.4vw, 32px);
+  font-size: clamp(33px, 3.6vw, 48px);
   line-height: 1;
 }
 
 .metric-card small {
   color: var(--faint);
-  font-size: 11px;
+  font-size: 16.5px;
 }
 
 .workspace {
@@ -423,7 +432,7 @@ h1 {
 .detail-panel h2,
 .dialog-heading h2 {
   margin-bottom: 0;
-  font-size: 19px;
+  font-size: 28.5px;
   font-weight: 680;
   letter-spacing: -0.02em;
 }
@@ -433,7 +442,7 @@ h1 {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 16.5px;
   cursor: pointer;
   user-select: none;
 }
@@ -518,9 +527,9 @@ h1 {
 
 table {
   width: 100%;
-  min-width: 720px;
+  min-width: 860px;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 18px;
 }
 
 th,
@@ -536,7 +545,7 @@ th {
   top: 0;
   color: var(--faint);
   background: #11191d;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -574,7 +583,7 @@ tbody tr:last-child td {
   margin-top: 3px;
   color: var(--faint);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .status-label,
@@ -589,7 +598,7 @@ tbody tr:last-child td {
   color: var(--muted);
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.025);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .status-label::before {
@@ -604,6 +613,7 @@ tbody tr:last-child td {
 .status-label.interrupted { color: var(--amber); }
 .status-label.error { color: var(--red); }
 .mode-label.anchor { color: var(--cyan); }
+.mode-label.cache { color: var(--green); }
 
 .tool-sequence {
   display: flex;
@@ -623,12 +633,12 @@ tbody tr:last-child td {
   color: var(--muted);
   background: rgba(255, 255, 255, 0.025);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .tool-arrow {
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .empty-state {
@@ -655,13 +665,13 @@ tbody tr:last-child td {
   border-radius: 14px;
   color: var(--cyan);
   background: var(--cyan-soft);
-  font-size: 22px;
+  font-size: 33px;
 }
 
 .empty-state h3,
 .detail-placeholder h2 {
   margin-bottom: 8px;
-  font-size: 15px;
+  font-size: 22.5px;
 }
 
 .empty-state p,
@@ -669,14 +679,26 @@ tbody tr:last-child td {
   max-width: 390px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 18px;
   line-height: 1.6;
 }
 
 .table-foot {
   margin: 12px 2px 0;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
+}
+
+.table-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.table-actions .button {
+  flex: 0 0 auto;
+  margin-top: 12px;
 }
 
 .detail-panel {
@@ -717,7 +739,7 @@ tbody tr:last-child td {
   border: 0;
   color: var(--faint);
   background: transparent;
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .request-id-button code {
@@ -751,14 +773,14 @@ tbody tr:last-child td {
 
 .detail-block h3 {
   margin-bottom: 0;
-  font-size: 12px;
+  font-size: 18px;
   font-weight: 680;
 }
 
 .scope-badge {
   color: var(--faint);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .mini-metrics {
@@ -783,7 +805,7 @@ tbody tr:last-child td {
 
 .mini-metric span {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .mini-metric strong {
@@ -791,7 +813,7 @@ tbody tr:last-child td {
   overflow: hidden;
   color: var(--text);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 13px;
+  font-size: 19.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -799,7 +821,7 @@ tbody tr:last-child td {
 .subheading {
   margin: 14px 0 8px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 13.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -848,7 +870,7 @@ tbody tr:last-child td {
 .fact-list dt,
 .config-list dt {
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .fact-list dd,
@@ -858,7 +880,7 @@ tbody tr:last-child td {
   overflow-wrap: anywhere;
   color: var(--muted);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 10px;
+  font-size: 15px;
   text-align: right;
 }
 
@@ -872,7 +894,7 @@ tbody tr:last-child td {
 .read-only-badge {
   min-height: auto;
   padding: 4px 8px;
-  font-size: 9px;
+  font-size: 13.5px;
   text-transform: uppercase;
 }
 
@@ -885,7 +907,7 @@ tbody tr:last-child td {
   border-radius: 999px;
   color: var(--green);
   background: rgba(167, 235, 133, 0.05);
-  font-size: 9px;
+  font-size: 13.5px;
   white-space: nowrap;
 }
 
@@ -911,19 +933,19 @@ tbody tr:last-child td {
 }
 
 .anchor-card strong {
-  font-size: 12px;
+  font-size: 18px;
 }
 
 .anchor-card small {
   color: var(--cyan);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .anchor-card code {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 13.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -941,7 +963,7 @@ tbody tr:last-child td {
 .anchor-builder summary {
   padding: 14px 2px 4px;
   color: var(--cyan);
-  font-size: 11px;
+  font-size: 16.5px;
   font-weight: 650;
   cursor: pointer;
 }
@@ -962,11 +984,12 @@ tbody tr:last-child td {
   display: grid;
   gap: 6px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .anchor-form input,
 .anchor-form select,
+.anchor-form textarea,
 .profile-form input,
 .profile-form select {
   width: 100%;
@@ -978,6 +1001,32 @@ tbody tr:last-child td {
   background: var(--surface-soft);
 }
 
+.key-preview {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.key-preview code {
+  color: var(--cyan);
+  letter-spacing: 0.035em;
+}
+
+.key-preview.empty {
+  color: var(--faint);
+}
+
+.anchor-form textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.anchor-form .wide {
+  grid-column: 1 / -1;
+}
+
 .anchor-form .form-note,
 .anchor-form .button {
   grid-column: 1 / -1;
@@ -987,7 +1036,7 @@ tbody tr:last-child td {
 .panel-intro {
   margin: 0;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
   line-height: 1.6;
 }
 
@@ -1013,19 +1062,19 @@ tbody tr:last-child td {
 }
 
 .job-card strong {
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .job-card small {
   margin-top: 4px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 13.5px;
   overflow-wrap: anywhere;
 }
 
 .job-status {
   color: var(--amber);
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .job-status.succeeded { color: var(--green); }
@@ -1067,7 +1116,7 @@ tbody tr:last-child td {
 }
 
 .profile-title strong {
-  font-size: 13px;
+  font-size: 19.5px;
   text-transform: uppercase;
 }
 
@@ -1075,7 +1124,7 @@ tbody tr:last-child td {
   margin-top: 3px;
   color: var(--cyan);
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .toggle-field {
@@ -1109,7 +1158,7 @@ tbody tr:last-child td {
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 13.5px;
 }
 
 .profile-state.running {
@@ -1123,7 +1172,7 @@ tbody tr:last-child td {
 
 .muted {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 18px;
 }
 
 footer {
@@ -1132,7 +1181,7 @@ footer {
   gap: 20px;
   padding: 22px 3px 0;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
   line-height: 1.55;
 }
 
@@ -1172,7 +1221,7 @@ footer span {
 .dialog-heading + p {
   margin: 18px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 18px;
   line-height: 1.6;
 }
 
@@ -1182,14 +1231,14 @@ footer span {
   border: 0;
   color: var(--muted);
   background: transparent;
-  font-size: 24px;
+  font-size: 36px;
 }
 
 .token-field span {
   display: block;
   margin-bottom: 7px;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 15px;
 }
 
 .dialog-actions {
@@ -1212,7 +1261,7 @@ footer span {
   color: var(--text);
   background: #172126;
   box-shadow: var(--shadow);
-  font-size: 11px;
+  font-size: 16.5px;
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 160ms ease, transform 160ms ease;
@@ -1271,6 +1320,7 @@ footer span {
   .page-shell {
     width: calc(100% - 24px);
     padding-top: 36px;
+    zoom: 1;
   }
 
   .intro {
@@ -1314,6 +1364,14 @@ footer span {
 
   .filters {
     grid-template-columns: 1fr;
+  }
+
+  .table-actions {
+    display: grid;
+  }
+
+  .table-actions .button {
+    justify-self: start;
   }
 
   .mini-metrics {

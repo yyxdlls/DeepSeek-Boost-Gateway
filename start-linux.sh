@@ -2,6 +2,25 @@
 set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ "${1:-}" = "--attached" ]; then
+  shift
+elif [ ! -t 1 ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+  if command -v x-terminal-emulator >/dev/null 2>&1; then
+    x-terminal-emulator -e "$0" --attached
+    exit 0
+  elif command -v gnome-terminal >/dev/null 2>&1; then
+    gnome-terminal -- "$0" --attached
+    exit 0
+  elif command -v konsole >/dev/null 2>&1; then
+    konsole -e "$0" --attached
+    exit 0
+  elif command -v xterm >/dev/null 2>&1; then
+    xterm -hold -e "$0" --attached
+    exit 0
+  fi
+fi
+
 cd "$PROJECT_DIR"
 
 printf '\n DeepSeek Boost Gateway\n ======================\n\n'
@@ -67,8 +86,9 @@ fi
 
 printf '%s\n' \
   '[4/4] 正在启动 Gateway，请保持此终端开启。' \
-  '      WebUI: http://127.0.0.1:8642/' \
+  '      当前页面: http://127.0.0.1:8642/' \
   '      已配置的数据 API 地址会显示在下方。' \
+  '      关闭此终端会停止由它启动的 Gateway。' \
   ''
 
 if [ "${GATEWAY_NO_OPEN:-0}" = "1" ]; then

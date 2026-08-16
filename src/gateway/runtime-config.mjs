@@ -2,6 +2,8 @@ import { join } from 'node:path'
 
 const MODEL_PRO = 'deepseek-v4-pro'
 const MODEL_FLASH = 'deepseek-v4-flash'
+const DEFAULT_PRO_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-two-tool-v2.json'
+const DEFAULT_FLASH_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-two-tool-v2-flash-copy.json'
 
 const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
   Object.freeze({
@@ -10,13 +12,15 @@ const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
     model: MODEL_PRO,
     defaultPort: 8643,
     defaultEnabled: true,
+    defaultAnchorPath: DEFAULT_PRO_ANCHOR_PATH,
   }),
   Object.freeze({
     name: 'flash',
     prefix: 'GATEWAY_FLASH',
     model: MODEL_FLASH,
     defaultPort: 8644,
-    defaultEnabled: false,
+    defaultEnabled: true,
+    defaultAnchorPath: DEFAULT_FLASH_ANCHOR_PATH,
   }),
 ])
 
@@ -70,8 +74,12 @@ function singleProfile(env) {
       [MODEL_PRO]: nonEmpty(
         env.GATEWAY_PRO_ANCHOR_PATH,
         env.GATEWAY_ANCHOR_PATH,
+        DEFAULT_PRO_ANCHOR_PATH,
       ),
-      [MODEL_FLASH]: env.GATEWAY_FLASH_ANCHOR_PATH ?? '',
+      [MODEL_FLASH]: nonEmpty(
+        env.GATEWAY_FLASH_ANCHOR_PATH,
+        DEFAULT_FLASH_ANCHOR_PATH,
+      ),
     },
     logDir: env.GATEWAY_LOG_DIR,
     ...sharedOptions(env),
@@ -112,6 +120,7 @@ function splitProfile(env, descriptor) {
       [descriptor.model]: nonEmpty(
         env[`${prefix}_ANCHOR_PATH`],
         descriptor.model === MODEL_PRO ? env.GATEWAY_ANCHOR_PATH : '',
+        descriptor.defaultAnchorPath,
       ),
     },
     logDir: nonEmpty(env[`${prefix}_LOG_DIR`], join(sharedLogRoot, descriptor.name)),
