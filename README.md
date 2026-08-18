@@ -15,8 +15,6 @@ DeepSeek Boost Gateway 是一个本地、跨平台的 OpenAI-compatible Gateway�
 
 这里的“Minimal 风格”是对推理开头、短语、长度和工具行为的轨迹观察，不等同于对任务质量的自动判定，也不保证每个任务、每轮请求都产生完全相同的措辞。
 
-项目侧进一步实测发现，在外部 Harness 中同时启用 [J-Space Cognition Suite](https://github.com/Tiger3807861189/J-Space-Cognition-Suite-V3.6) Skill 后，V4 Pro 与 V4 Flash 的视觉任务表现有较明显提升。相关的一句话单网页生成样例收录在 [`showcase/j-space-one-shot/`](showcase/j-space-one-shot/)；这些结果属于实际使用观察，不替代多次运行的受控评测。
-
 当前主要能力：
 
 - V4 Pro 与 V4 Flash 独立端口、独立上游地址、独立 Key 和独立 Anchor；
@@ -275,8 +273,7 @@ npm run anchor:inspect
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：官方 Minimal 环境、工具协议和运行方式；
 - [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)：Minimal bootstrap、轨迹锚定以及后续工具面的设计思路；
-- [modeltest](https://github.com/xiaobright/modeltest)：公开的轨迹观测、Minimal/Standard 对照和统计方法；
-- [J-Space Cognition Suite](https://github.com/Tiger3807861189/J-Space-Cognition-Suite-V3.6)：推理时工作空间、长程状态维持和按需加载思路。
+- [modeltest](https://github.com/xiaobright/modeltest)：公开的轨迹观测、Minimal/Standard 对照和统计方法。
 
 这些项目与 DeepSeek Boost Gateway 相互独立。本仓库的 Anchor 回放、跨 Harness Gateway、凭据隔离和 WebUI 管理均为本项目自己的实现；外部项目的实验结论也不应被解释为本项目对所有模型和任务的效果保证。
 
