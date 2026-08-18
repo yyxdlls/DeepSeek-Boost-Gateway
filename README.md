@@ -15,7 +15,7 @@ DeepSeek Boost Gateway 是一个本地、跨平台的 OpenAI-compatible Gateway�
 
 这里的“Minimal 风格”是对推理开头、短语、长度和工具行为的轨迹观察，不等同于对任务质量的自动判定，也不保证每个任务、每轮请求都产生完全相同的措辞。
 
-项目侧进一步实测发现，在外部 Harness 中同时启用 [J-Space Cognition Suite](https://github.com/Tiger3807861189/J-Space-Cognition-Suite-V3.6) Skill 后，V4 Pro 与 V4 Flash 的复杂任务表现都有明显提升。相关的一句话单网页生成样例收录在 [`showcase/j-space-one-shot/`](showcase/j-space-one-shot/)；这些结果属于实际使用观察，不替代多次运行的受控评测。
+项目侧进一步实测发现，在外部 Harness 中同时启用 [J-Space Cognition Suite](https://github.com/Tiger3807861189/J-Space-Cognition-Suite-V3.6) Skill 后，V4 Pro 与 V4 Flash 的视觉任务表现有较明显提升。相关的一句话单网页生成样例收录在 [`showcase/j-space-one-shot/`](showcase/j-space-one-shot/)；这些结果属于实际使用观察，不替代多次运行的受控评测。
 
 当前主要能力：
 
