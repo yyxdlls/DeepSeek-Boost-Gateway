@@ -7,7 +7,7 @@ import { RotatingJsonlWriter } from './jsonl-writer.mjs'
 import { diagnosticEntry } from './diagnostic-history.mjs'
 import {
   OpenAiResponseObserver,
-  TRAJECTORY_MARKER_PROFILE,
+  COT_MARKER_PROFILE,
   summarizeMessageTrajectory,
   summarizeResponseBody,
 } from './trajectory-stats.mjs'
@@ -82,6 +82,23 @@ function managementAuthorized(request, config) {
   const expectedBytes = Buffer.from(config.managementToken)
   const suppliedBytes = Buffer.from(supplied)
   return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes)
+}
+
+function managementMutationAuthorized(request) {
+  return request.headers['x-gateway-management-request'] === '1' &&
+    /^application\/json(?:;|$)/i.test(String(request.headers['content-type'] ?? ''))
+}
+
+async function readManagementJson(request) {
+  const body = await readRequestBody(request, 64 * 1024)
+  if (!body.length) return {}
+  try {
+    return JSON.parse(body.toString('utf8'))
+  } catch {
+    const error = new Error('Management request body must be valid JSON.')
+    error.statusCode = 400
+    throw error
+  }
 }
 
 function normalizedBasePath(pathname) {
@@ -166,10 +183,105 @@ function maybeJson(text, contentType = '') {
   }
 }
 
+function maybeParseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
 function toolNames(tools) {
   return Array.isArray(tools)
     ? tools.map((tool) => tool?.function?.name ?? tool?.name).filter(Boolean)
     : []
+}
+
+function messageContentChars(content) {
+  if (typeof content === 'string') return content.length
+  if (!Array.isArray(content)) return 0
+  return content.reduce((sum, part) => {
+    if (typeof part === 'string') return sum + part.length
+    if (typeof part?.text === 'string') return sum + part.text.length
+    return sum
+  }, 0)
+}
+
+// Streaming chat-completions requests are re-issued with an explicit
+// stream_options.include_usage so the terminal usage (and therefore prompt
+// cache hit / input tokens) is reported back for local diagnostics. This only
+// touches the forwarded upstream body, never the caller's view of the request.
+function injectStreamUsage(payload, bodyText) {
+  if (!payload || typeof payload !== 'object') return bodyText
+  if (payload.stream !== true) return bodyText
+  if (payload.stream_options?.include_usage === true) return bodyText
+  const next = {
+    ...payload,
+    stream_options: { ...(payload.stream_options ?? {}), include_usage: true },
+  }
+  return JSON.stringify(next)
+}
+
+const RAW_MESSAGE_CHAR_LIMIT = 64_000
+
+function capRawText(value) {
+  const text = String(value ?? '')
+  if (text.length <= RAW_MESSAGE_CHAR_LIMIT) return { text, truncated: false }
+  return { text: `${text.slice(0, RAW_MESSAGE_CHAR_LIMIT)}…（已截断）`, truncated: true }
+}
+
+function capRawMessages(messages) {
+  if (!Array.isArray(messages)) return []
+  return messages.map((message) => {
+    const capped = { role: message?.role ?? 'assistant' }
+    if (typeof message?.reasoning_content === 'string') {
+      capped.reasoning_content = capRawText(message.reasoning_content).text
+    }
+    const contentValue = message?.content
+    if (typeof contentValue === 'string') {
+      capped.content = capRawText(contentValue).text
+    } else if (Array.isArray(contentValue)) {
+      capped.content = contentValue.map((part) => {
+        if (typeof part === 'string') return capRawText(part).text
+        if (typeof part?.text === 'string') return { type: part.type ?? 'text', ...capRawText(part.text) }
+        // Vision requests may carry image URLs or data URIs. Preserve normal
+        // structured parts, but never copy an unbounded base64 payload into
+        // diagnostic history and the message dialog.
+        try {
+          const serialized = JSON.stringify(part)
+          if (serialized.length <= RAW_MESSAGE_CHAR_LIMIT) return structuredClone(part)
+          return {
+            type: part?.type ?? 'unknown',
+            preview: capRawText(serialized).text,
+            truncated: true,
+          }
+        } catch {
+          return { type: part?.type ?? 'unknown', preview: '[无法序列化]' }
+        }
+      })
+    }
+    if (Array.isArray(message?.tool_calls)) {
+      capped.tool_calls = message.tool_calls.map((call) => ({
+        id: call?.id ?? null,
+        type: 'function',
+        function: {
+          name: call?.function?.name ?? '',
+          arguments: capRawText(call?.function?.arguments ?? '').text,
+        },
+      }))
+    }
+    return capped
+  })
+}
+
+function messageCharsByRole(messages) {
+  const chars = { system: 0, user: 0, assistant: 0, tool: 0, other: 0 }
+  for (const message of messages) {
+    const role = message?.role ?? 'other'
+    const bucket = role in chars ? role : 'other'
+    chars[bucket] += messageContentChars(message?.content)
+  }
+  return { ...chars, total: Object.values(chars).reduce((sum, value) => sum + value, 0) }
 }
 
 export function summarizeRequest(text, scope = 'request_history') {
@@ -186,6 +298,7 @@ export function summarizeRequest(text, scope = 'request_history') {
     stream: Boolean(payload.stream),
     messageCount: messages.length,
     roles: messages.map((message) => message?.role ?? 'unknown'),
+    chars: messageCharsByRole(messages),
     toolCount: Array.isArray(payload.tools) ? payload.tools.length : 0,
     toolNames: toolNames(payload.tools),
     reasoningEffort: payload.reasoning_effort ?? null,
@@ -278,7 +391,7 @@ function publicConfig(config) {
     diagnosticHistoryLimit: config.diagnosticHistoryLimit,
     logMaxBytes: config.logMaxBytes,
     logMaxFiles: config.logMaxFiles,
-    trajectoryMarkerProfile: TRAJECTORY_MARKER_PROFILE,
+    trajectoryMarkerProfile: COT_MARKER_PROFILE,
     gatewayApiKeyConfigured: Boolean(config.gatewayApiKey),
     gatewayApiKeySource: config.gatewayApiKeySource,
     managementAuthRequired: Boolean(config.managementToken),
@@ -363,6 +476,12 @@ export function createGatewayServer(options = {}) {
       options.activityLogFile ?? join(logDir, 'activity.jsonl'),
     ),
     onDiagnostic: typeof options.onDiagnostic === 'function' ? options.onDiagnostic : null,
+    deploymentView: typeof options.deploymentView === 'function'
+      ? options.deploymentView
+      : () => ({ mode: options.deploymentMode ?? 'single', combinedPort: 8646 }),
+    updateDeployment: typeof options.updateDeployment === 'function' ? options.updateDeployment : null,
+    listAnchors: typeof options.listAnchors === 'function' ? options.listAnchors : null,
+    readAnchorContent: typeof options.readAnchorContent === 'function' ? options.readAnchorContent : null,
   }
   config.trafficWriter = new RotatingJsonlWriter(config.logFile, {
     maxBytes: config.logMaxBytes,
@@ -432,7 +551,7 @@ export function createGatewayServer(options = {}) {
         : 20
       sendJson(response, 200, {
         schemaVersion: 1,
-        markerProfile: TRAJECTORY_MARKER_PROFILE,
+        markerProfile: COT_MARKER_PROFILE,
         retained: diagnostics.length,
         entries: diagnostics.slice(-limit).reverse(),
       })
@@ -453,6 +572,113 @@ export function createGatewayServer(options = {}) {
         entry ? 200 : 404,
         entry ?? { error: { type: 'gateway_diagnostic_not_found', request_id: diagnosticMatch[1] } },
       )
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'GET' &&
+      localUrl.pathname === '/__gateway/config'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      sendJson(response, 200, {
+        schemaVersion: 1,
+        deploymentMode: config.deploymentMode,
+        deployment: config.deploymentView(),
+        profiles: [],
+      })
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'PATCH' &&
+      localUrl.pathname === '/__gateway/config/deployment'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!config.updateDeployment) {
+        sendJson(response, 501, { error: { type: 'gateway_deployment_config_read_only' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, { error: { type: 'gateway_management_mutation_forbidden' } })
+        return
+      }
+      try {
+        const deployment = await config.updateDeployment(await readManagementJson(request))
+        sendJson(response, 200, { schemaVersion: 1, deployment })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: 'gateway_deployment_update_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'GET' &&
+      localUrl.pathname === '/__gateway/anchors'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      try {
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          anchors: config.listAnchors ? await config.listAnchors() : [],
+        })
+      } catch (error) {
+        sendJson(response, 500, {
+          error: { type: 'gateway_anchor_catalog_failed', message: error?.message ?? String(error) },
+        })
+      }
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'GET' &&
+      localUrl.pathname === '/__gateway/anchors/content'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!config.readAnchorContent) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_content_unavailable' } })
+        return
+      }
+      try {
+        const path = localUrl.searchParams.get('path')
+        const id = localUrl.searchParams.get('id')
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          anchor: await config.readAnchorContent({
+            ...(path !== null ? { path } : {}),
+            ...(id !== null ? { id } : {}),
+          }),
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.statusCode === 404
+              ? 'gateway_anchor_not_found'
+              : 'gateway_anchor_content_rejected',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
       return
     }
 
@@ -657,6 +883,19 @@ export function createGatewayServer(options = {}) {
     }
 
     const upstreamText = upstreamBody.toString('utf8')
+
+    if (isChatCompletions) {
+      let parsedUpstream
+      try {
+        parsedUpstream = JSON.parse(upstreamText)
+      } catch {
+        parsedUpstream = null
+      }
+      const injected = injectStreamUsage(parsedUpstream, upstreamText)
+      upstreamBody = Buffer.from(injected, 'utf8')
+    }
+
+    const rawRequestPayload = parsedChatRequest ?? (isChatCompletions ? maybeParseJson(requestText) : null)
     const exchange = {
       schemaVersion: 1,
       requestId,
@@ -670,6 +909,7 @@ export function createGatewayServer(options = {}) {
         headers: redactHeaders(headers),
         bytes: requestBody.length,
         summary: summarizeRequest(requestText, 'request_history'),
+        rawMessages: capRawMessages(Array.isArray(rawRequestPayload?.messages) ? rawRequestPayload.messages : null),
         ...bodyCapture(config, requestText, requestContentType, false),
       },
       transformation: anchorMetrics,
@@ -813,6 +1053,7 @@ export function createGatewayServer(options = {}) {
       abortedByClient,
       transportError,
       summary: responseObserver.finish({ abortedByClient, transportError }),
+      rawMessages: capRawMessages(responseObserver.assembledMessages()),
       ...bodyCapture(config, responseBody, responseContentType, truncated),
     }
     addDiagnostic(exchange)

@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
-import { TRAJECTORY_MARKER_PROFILE } from './trajectory-stats.mjs'
+import { COT_MARKER_PROFILE } from './trajectory-stats.mjs'
 import { serveWebUiRequest } from './web-ui.mjs'
 
 function isLoopbackHost(host) {
@@ -75,14 +75,18 @@ export function createGatewayManagementServer(options = {}) {
   const config = {
     instanceId: options.instanceId ?? null,
     version: options.version ?? null,
+    deploymentMode: options.deploymentMode ?? 'split',
     host: options.host ?? '127.0.0.1',
     port: Number(options.port ?? 8642),
     managementToken: options.managementToken ?? '',
     dataServers: options.dataServers ?? [],
     profileViews: options.profileViews ?? (() => []),
     updateProfile: options.updateProfile ?? null,
+    deploymentView: options.deploymentView ?? (() => ({ mode: options.deploymentMode ?? 'split', combinedPort: 8646 })),
+    updateDeployment: options.updateDeployment ?? null,
     anchorJobs: options.anchorJobs ?? null,
     listAnchors: options.listAnchors ?? null,
+    readAnchorContent: options.readAnchorContent ?? null,
     clearDiagnostics: options.clearDiagnostics ?? null,
   }
   if (!isLoopbackHost(config.host) && !config.managementToken) {
@@ -95,6 +99,9 @@ export function createGatewayManagementServer(options = {}) {
 
   function publicHealth() {
     const currentInstances = instances()
+    const configuredKeyCount = currentInstances.filter(
+      (instance) => instance.gatewayApiKeyConfigured,
+    ).length
     const anchors = currentInstances.flatMap((instance) =>
       (instance.anchors ?? []).map((anchor) => ({ ...anchor, profile: instance.profile })),
     )
@@ -103,15 +110,16 @@ export function createGatewayManagementServer(options = {}) {
       processId: process.pid,
       instanceId: config.instanceId,
       version: config.version,
-      deploymentMode: 'split',
+      deploymentMode: config.deploymentMode,
       profile: 'management',
-      mode: 'split',
+      mode: config.deploymentMode,
       host: config.host,
       port: config.port,
       credentialPolicy: 'gateway-only',
-      gatewayApiKeyConfigured:
-        currentInstances.length > 0 &&
-        currentInstances.every((instance) => instance.gatewayApiKeyConfigured),
+      gatewayApiKeyConfigured: configuredKeyCount > 0,
+      allGatewayApiKeysConfigured:
+        currentInstances.length > 0 && configuredKeyCount === currentInstances.length,
+      gatewayApiKeyConfiguredCount: configuredKeyCount,
       managementAuthRequired: Boolean(config.managementToken),
       diagnosticHistoryLimit: currentInstances.reduce(
         (sum, instance) => sum + Number(instance.diagnosticHistoryLimit ?? 0),
@@ -160,7 +168,7 @@ export function createGatewayManagementServer(options = {}) {
       const entries = diagnostics(limit)
       sendJson(response, 200, {
         schemaVersion: 1,
-        markerProfile: TRAJECTORY_MARKER_PROFILE,
+        markerProfile: COT_MARKER_PROFILE,
         retained: config.dataServers.reduce(
           (sum, dataServer) => sum + (dataServer.gatewayDiagnostics?.(500).length ?? 0),
           0,
@@ -186,11 +194,11 @@ export function createGatewayManagementServer(options = {}) {
       }
       try {
         const input = await readJson(request)
-        if (input.confirmation !== '清空全部请求') {
+        if (input.confirmation !== '\u6e05\u7a7a\u5168\u90e8\u8bf7\u6c42') {
           sendJson(response, 400, {
             error: {
               type: 'gateway_diagnostics_confirmation_required',
-              message: '必须准确输入“清空全部请求”才能删除诊断和轮转日志。',
+              message: '\u5fc5\u987b\u51c6\u786e\u8f93\u5165\u201c\u6e05\u7a7a\u5168\u90e8\u8bf7\u6c42\u201d\u624d\u80fd\u5220\u9664\u8bca\u65ad\u548c\u8f6e\u8f6c\u65e5\u5fd7\u3002',
             },
           })
           return
@@ -211,9 +219,38 @@ export function createGatewayManagementServer(options = {}) {
     if (request.method === 'GET' && localUrl.pathname === '/__gateway/config') {
       sendJson(response, 200, {
         schemaVersion: 1,
-        deploymentMode: 'split',
+        deploymentMode: config.deploymentMode,
+        deployment: config.deploymentView(),
         profiles: config.profileViews().map(publicProfile),
       })
+      return
+    }
+
+    if (request.method === 'PATCH' && localUrl.pathname === '/__gateway/config/deployment') {
+      if (!config.updateDeployment) {
+        sendJson(response, 501, { error: { type: 'gateway_deployment_config_read_only' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Deployment writes require a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        const deployment = await config.updateDeployment(await readJson(request))
+        sendJson(response, 200, { schemaVersion: 1, deployment })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: 'gateway_deployment_update_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
       return
     }
 
@@ -234,8 +271,36 @@ export function createGatewayManagementServer(options = {}) {
       return
     }
 
+    if (request.method === 'GET' && localUrl.pathname === '/__gateway/anchors/content') {
+      if (!config.readAnchorContent) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_content_unavailable' } })
+        return
+      }
+      const path = localUrl.searchParams.get('path')
+      const id = localUrl.searchParams.get('id')
+      try {
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          anchor: await config.readAnchorContent({
+            ...(path !== null ? { path } : {}),
+            ...(id !== null ? { id } : {}),
+          }),
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.statusCode === 404
+              ? 'gateway_anchor_not_found'
+              : 'gateway_anchor_content_rejected',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
     const profileMatch = request.method === 'PATCH'
-      ? localUrl.pathname.match(/^\/__gateway\/config\/profiles\/(pro|flash)$/)
+      ? localUrl.pathname.match(/^\/__gateway\/config\/profiles\/(pro|flash|vision)$/)
       : null
     if (profileMatch) {
       if (!config.updateProfile) {
@@ -301,6 +366,31 @@ export function createGatewayManagementServer(options = {}) {
       return
     }
 
+    const anchorJobCandidateMatch = request.method === 'GET'
+      ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)\/candidates\/(\d+)$/i)
+      : null
+    if (anchorJobCandidateMatch) {
+      if (!config.anchorJobs?.getCandidate) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_builder_unavailable' } })
+        return
+      }
+      try {
+        const candidate = await config.anchorJobs.getCandidate(
+          anchorJobCandidateMatch[1],
+          anchorJobCandidateMatch[2],
+        )
+        sendJson(response, 200, { schemaVersion: 1, candidate })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: 'gateway_anchor_candidate_unavailable',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
     const anchorJobMatch = request.method === 'GET'
       ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)$/i)
       : null
@@ -311,6 +401,44 @@ export function createGatewayManagementServer(options = {}) {
         job ? 200 : 404,
         job ?? { error: { type: 'gateway_anchor_job_not_found' } },
       )
+      return
+    }
+
+    const anchorJobActionMatch = request.method === 'POST'
+      ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)\/(select|discard)$/i)
+      : null
+    if (anchorJobActionMatch) {
+      if (!config.anchorJobs) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_builder_unavailable' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Anchor selection requires a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      const [, jobId, action] = anchorJobActionMatch
+      try {
+        const input = await readJson(request)
+        if (action === 'discard' && input.candidate !== undefined) {
+          throw new Error('Discarding a job takes no candidate index.')
+        }
+        const job = action === 'select'
+          ? config.anchorJobs.select(jobId, input.candidate)
+          : config.anchorJobs.discard(jobId)
+        sendJson(response, 202, { schemaVersion: 1, job })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: 'gateway_anchor_job_action_rejected',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
       return
     }
 

@@ -64,14 +64,14 @@ export async function loadAnchorArtifact(path = DEFAULT_ANCHOR_PATH) {
   }
 }
 
-function currentHarnessMessage(systemMessages, continuous = false) {
+function currentHarnessMessage(systemMessages, continuous = false, bridge = '') {
   const blocks = systemMessages.map((message, index) => {
     const label = message.role === 'developer' ? 'developer' : 'system'
     return `--- ${label} instruction ${index + 1} ---\n${contentToText(message.content)}`
   })
   return {
     role: 'user',
-    content: `${continuous
+    content: `${bridge ? `${bridge}\n\n` : ''}${continuous
       ? 'Harness instructions to follow as we continue working:'
       : 'Current Harness instructions (authoritative for the current task):'}\n\n${
       blocks.length > 0 ? blocks.join('\n\n') : '(none supplied)'
@@ -99,14 +99,13 @@ export function applyAnchorToChatRequest(payload, loadedAnchor) {
   const anchorMessages = structuredClone(artifact.trajectory.messages)
   const transitionMessage =
     artifact.continuation?.message ?? ENVIRONMENT_SWITCH_MESSAGE
-  const switchMessage = { role: 'user', content: transitionMessage }
   const harnessMessage = currentHarnessMessage(
     systemMessages,
     artifact.continuation?.mode === 'same-active-workstream',
+    transitionMessage,
   )
   const messages = [
     ...anchorMessages,
-    switchMessage,
     harnessMessage,
     ...conversationMessages,
   ]
@@ -124,6 +123,7 @@ export function applyAnchorToChatRequest(payload, loadedAnchor) {
       anchorMessageChars: JSON.stringify(anchorMessages).length,
       anchorHistory: summarizeMessageTrajectory(anchorMessages, 'anchor_history'),
       environmentSwitchChars: transitionMessage.length,
+      bridgeMessageChars: harnessMessage.content.length,
       continuationMode: artifact.continuation?.mode ?? 'completed-bootstrap',
       originalMessageCount: originalMessages.length,
       originalSystemMessageCount: systemMessages.length,

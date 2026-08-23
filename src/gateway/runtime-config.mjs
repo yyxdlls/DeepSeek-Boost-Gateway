@@ -2,8 +2,8 @@ import { join } from 'node:path'
 
 const MODEL_PRO = 'deepseek-v4-pro'
 const MODEL_FLASH = 'deepseek-v4-flash'
+const MODEL_VISION = 'deepseek-v4-flash-vision-exp'
 const DEFAULT_PRO_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-pro.json'
-const DEFAULT_FLASH_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-flash.json'
 
 const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
   Object.freeze({
@@ -12,6 +12,7 @@ const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
     model: MODEL_PRO,
     defaultPort: 8643,
     defaultEnabled: true,
+    defaultMode: 'anchor',
     defaultAnchorPath: DEFAULT_PRO_ANCHOR_PATH,
   }),
   Object.freeze({
@@ -20,7 +21,21 @@ const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
     model: MODEL_FLASH,
     defaultPort: 8644,
     defaultEnabled: true,
-    defaultAnchorPath: DEFAULT_FLASH_ANCHOR_PATH,
+    // The previously bundled Flash artifact copied the Pro trajectory and was
+    // not a Flash-native generation. Do not activate it as a trusted default.
+    defaultMode: 'bypass',
+    defaultAnchorPath: '',
+  }),
+  Object.freeze({
+    name: 'vision',
+    prefix: 'GATEWAY_VISION',
+    model: MODEL_VISION,
+    defaultPort: 8645,
+    defaultEnabled: true,
+    // No bundled model-native Anchor exists yet. Start transparently, then
+    // generate and bind one from the WebUI before switching to anchor mode.
+    defaultMode: 'bypass',
+    defaultAnchorPath: '',
   }),
 ])
 
@@ -57,7 +72,7 @@ function sharedOptions(env) {
 }
 
 function singleProfile(env) {
-  const models = (env.GATEWAY_MODELS ?? MODEL_PRO)
+  const models = (env.GATEWAY_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','))
     .split(',')
     .map((model) => model.trim())
     .filter(Boolean)
@@ -69,17 +84,17 @@ function singleProfile(env) {
     upstreamBaseUrl: env.GATEWAY_UPSTREAM_BASE_URL ?? 'https://api.deepseek.com',
     gatewayApiKey: env.GATEWAY_UPSTREAM_API_KEY ?? '',
     managementToken: env.GATEWAY_MANAGEMENT_TOKEN ?? '',
-    defaultMode: env.GATEWAY_ENHANCEMENT_MODE ?? 'anchor',
+    defaultMode: env.GATEWAY_ENHANCEMENT_MODE ?? (
+      models.length === 1 && models[0] === MODEL_PRO ? 'anchor' : 'bypass'
+    ),
     anchorPaths: {
       [MODEL_PRO]: nonEmpty(
         env.GATEWAY_PRO_ANCHOR_PATH,
         env.GATEWAY_ANCHOR_PATH,
         DEFAULT_PRO_ANCHOR_PATH,
       ),
-      [MODEL_FLASH]: nonEmpty(
-        env.GATEWAY_FLASH_ANCHOR_PATH,
-        DEFAULT_FLASH_ANCHOR_PATH,
-      ),
+      [MODEL_FLASH]: nonEmpty(env.GATEWAY_FLASH_ANCHOR_PATH),
+      [MODEL_VISION]: nonEmpty(env.GATEWAY_VISION_ANCHOR_PATH),
     },
     logDir: env.GATEWAY_LOG_DIR,
     ...sharedOptions(env),
@@ -113,8 +128,7 @@ function splitProfile(env, descriptor) {
     ),
     defaultMode: nonEmpty(
       env[`${prefix}_ENHANCEMENT_MODE`],
-      env.GATEWAY_ENHANCEMENT_MODE,
-      'anchor',
+      descriptor.defaultMode,
     ),
     anchorPaths: {
       [descriptor.model]: nonEmpty(
@@ -141,13 +155,13 @@ export function gatewaySplitProfiles(env = process.env) {
 export function gatewayRuntimeProfiles(env = process.env) {
   const mode = env.GATEWAY_INSTANCE_MODE ?? 'single'
   if (mode === 'single') return [singleProfile(env)]
-  if (mode !== 'split') {
-    throw new Error('GATEWAY_INSTANCE_MODE must be single or split.')
+  if (!['split', 'all'].includes(mode)) {
+    throw new Error('GATEWAY_INSTANCE_MODE must be split, single, or all.')
   }
 
   const profiles = gatewaySplitProfiles(env).filter((profile) => profile.enabled)
   if (profiles.length === 0) {
-    throw new Error('Split mode requires GATEWAY_PRO_ENABLED or GATEWAY_FLASH_ENABLED.')
+    throw new Error('Split mode requires at least one enabled Pro, Flash, or Vision profile.')
   }
 
   const listeners = new Set()
@@ -161,6 +175,46 @@ export function gatewayRuntimeProfiles(env = process.env) {
   return profiles
 }
 
+export function gatewayCombinedProfile(env = process.env) {
+  const combined = singleProfile({
+    ...env,
+    GATEWAY_MODELS: env.GATEWAY_COMBINED_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
+    GATEWAY_HOST: env.GATEWAY_COMBINED_HOST ?? env.GATEWAY_HOST ?? '127.0.0.1',
+    GATEWAY_PORT: env.GATEWAY_COMBINED_PORT ?? '8646',
+    GATEWAY_ENHANCEMENT_MODE: env.GATEWAY_COMBINED_ENHANCEMENT_MODE ?? 'bypass',
+    GATEWAY_LOG_DIR: env.GATEWAY_COMBINED_LOG_DIR ?? join(
+      env.GATEWAY_LOG_DIR ?? join(process.cwd(), 'results', 'gateway'),
+      'combined',
+    ),
+  })
+  return { ...combined, name: 'combined' }
+}
+
+export function validateGatewayDeployment(env = process.env) {
+  const mode = env.GATEWAY_INSTANCE_MODE ?? 'single'
+  const profiles = gatewayRuntimeProfiles(env)
+  const listeners = mode === 'single'
+    ? profiles.map((profile) => ({ name: profile.name, host: profile.host, port: profile.port }))
+    : [
+        { name: 'management', ...gatewayManagementConfig(env) },
+        ...profiles.map((profile) => ({ name: profile.name, host: profile.host, port: profile.port })),
+        ...(mode === 'all' ? [gatewayCombinedProfile(env)].map((profile) => ({
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+        })) : []),
+      ]
+  const seen = new Map()
+  for (const listener of listeners) {
+    const key = `${listener.host.toLowerCase()}:${listener.port}`
+    if (seen.has(key)) {
+      throw new Error(`Gateway ${listener.name} cannot share listener ${key} with ${seen.get(key)}.`)
+    }
+    seen.set(key, listener.name)
+  }
+  return { mode, listeners }
+}
+
 export function gatewayManagementConfig(env = process.env) {
   return {
     host: env.GATEWAY_WEB_UI_HOST ?? env.GATEWAY_HOST ?? '127.0.0.1',
@@ -172,4 +226,5 @@ export function gatewayManagementConfig(env = process.env) {
 export const GATEWAY_MODELS = Object.freeze({
   pro: MODEL_PRO,
   flash: MODEL_FLASH,
+  vision: MODEL_VISION,
 })

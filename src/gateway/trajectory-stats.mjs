@@ -1,26 +1,31 @@
+// Markers implement the v3 chain-of-thought (思维链) semantics. Exactly four
+// keyword groups are tracked, English before Chinese within each group, and
+// the array order below is the display order (most positive first):
+//   strong-positive  "I'm xxxing" / 我正在  -> gray-test CoT signature
+//   positive         "we need" / 我们需要   -> formal strong (Minimal) CoT
+//   positive         "let's" / 让我们       -> formal strong (Minimal) CoT
+//   negative         "let me" / 让我(们除外) -> formal weak (let me) CoT
+// English matching is case-insensitive with phrase boundaries; Chinese uses
+// literal prefixes. 让我 must not match inside 让我们, hence the lookahead.
+// Only reasoning text is counted; visible content is never scanned.
 const MARKER_DEFINITIONS = Object.freeze([
-  Object.freeze({ id: 'we', label: 'we', source: 'modeltest trajectory_evidence analyzer', pattern: /\bwe\b/giu }),
-  Object.freeze({ id: 'letMe', label: 'let me', source: 'modeltest trajectory_evidence analyzer', pattern: /\blet\s+me\b/giu }),
-  Object.freeze({ id: 'lets', label: "let's", source: 'modeltest trajectory_evidence analyzer', pattern: /\blet['\u2019]s\b/giu }),
-  Object.freeze({ id: 'i', label: 'i', source: 'modeltest trajectory_evidence analyzer', pattern: /\bi\b/giu }),
-  Object.freeze({ id: 'weNeed', label: 'We need', source: 'dsh-anchored-standard first-line signature', pattern: /\bwe\s+need\b/giu }),
-  Object.freeze({ id: 'theUserWants', label: 'The user wants', source: 'observed DSH Standard trajectory', pattern: /\bthe\s+user\s+wants\b/giu }),
-  Object.freeze({ id: 'iNeed', label: 'I need', source: 'trajectory classifier control signature', pattern: /\bi\s+need\b/giu }),
-  Object.freeze({ id: 'iShould', label: 'I should', source: 'trajectory classifier control signature', pattern: /\bi\s+should\b/giu }),
-  Object.freeze({ id: 'iWill', label: 'I will', source: 'trajectory classifier control signature', pattern: /\bi\s+will\b/giu }),
-  Object.freeze({ id: 'iAm', label: 'I am', source: 'gray-test observation', pattern: /\bi\s+am\b/giu }),
-  Object.freeze({ id: 'im', label: "I'm", source: 'gray-test observation', pattern: /\bi['\u2019]m\b/giu }),
-  Object.freeze({ id: 'iApostropheAm', label: "I'am", source: 'gray-test observation', pattern: /\bi['\u2019]am\b/giu }),
+  Object.freeze({ id: 'imIng', label: "I'm …ing", polarity: 'strong-positive', source: '灰度测试思维链特征', pattern: /\bi['\u2019]m\s+[a-z]+ing\b/giu }),
+  Object.freeze({ id: 'imIngZh', label: '我正在', polarity: 'strong-positive', source: '灰度测试思维链特征', pattern: /我正在/gu }),
+  Object.freeze({ id: 'weNeed', label: 'we need', polarity: 'positive', source: '正式版强思维链（Minimal）', pattern: /\bwe\s+need\b/giu }),
+  Object.freeze({ id: 'weNeedZh', label: '我们需要', polarity: 'positive', source: '正式版强思维链（Minimal）', pattern: /我们需要/gu }),
+  Object.freeze({ id: 'lets', label: "let's", polarity: 'positive', source: '正式版强思维链（Minimal）', pattern: /\blet['\u2019]s\b/giu }),
+  Object.freeze({ id: 'letsZh', label: '让我们', polarity: 'positive', source: '正式版强思维链（Minimal）', pattern: /让我们/gu }),
+  Object.freeze({ id: 'letMe', label: 'let me', polarity: 'negative', source: '正式版弱思维链（let me）', pattern: /\blet\s+me\b/giu }),
+  Object.freeze({ id: 'letMeZh', label: '让我', polarity: 'negative', source: '正式版弱思维链（let me）', pattern: /让我(?!们)/gu }),
 ])
 
-export const TRAJECTORY_MARKER_PROFILE = Object.freeze({
-  id: 'deepseek-trajectory-markers-v1',
+export const COT_MARKER_PROFILE = Object.freeze({
+  id: 'deepseek-cot-markers-v3',
   diagnosticOnly: true,
-  matching: 'case-insensitive English phrase boundaries; internal whitespace may vary; apostrophe variants are explicit',
-  referenceAnalyzer: 'xiaobright/modeltest evaluator/trajectory_evidence/analyze_trajectory_exports.py',
+  matching: 'case-insensitive English phrase boundaries plus literal Chinese markers; 让我 excludes 让我们; I\'m …ing requires a progressive verb',
   blockStats: ['chars', 'utf8Bytes', 'min', 'p50', 'p90', 'max'],
   openingMarkers: ['good', 'great', 'excellent'],
-  markers: MARKER_DEFINITIONS.map(({ id, label, source }) => ({ id, label, source })),
+  markers: MARKER_DEFINITIONS.map(({ id, label, polarity, source }) => ({ id, label, polarity, source })),
 })
 
 function occurrences(text, pattern) {
@@ -44,37 +49,55 @@ function openingStyle(text) {
   const trimmed = text.trimStart()
   if (!trimmed) return 'empty'
   if (/^we\s+need\b/iu.test(trimmed)) return 'we-need'
-  if (/^let\s+me\b/iu.test(trimmed)) return 'let-me'
-  if (/^the\s+user\s+wants\b/iu.test(trimmed)) return 'the-user-wants'
-  if (/^i\s+need\b/iu.test(trimmed)) return 'i-need'
-  if (/^i\s+should\b/iu.test(trimmed)) return 'i-should'
-  if (/^i\s+will\b/iu.test(trimmed)) return 'i-will'
-  if (/^i\s+am\b/iu.test(trimmed)) return 'i-am'
   if (/^i['\u2019]m\b/iu.test(trimmed)) return 'im'
-  if (/^i['\u2019]am\b/iu.test(trimmed)) return 'i-apostrophe-am'
+  if (/^let\s+me\b/iu.test(trimmed)) return 'let-me'
+  if (/^let['\u2019]s\b/iu.test(trimmed)) return 'lets'
+  if (/^the\s+user\s+wants\b/iu.test(trimmed)) return 'the-user-wants'
+  if (/^i\s+(need|should|will)\b/iu.test(trimmed)) return 'i-personal'
+  if (/^i\s+am\b/iu.test(trimmed)) return 'i-am'
+  if (/^我们需要/u.test(trimmed)) return 'we-need-zh'
+  if (/^让我们/u.test(trimmed)) return 'lets-zh'
+  if (/^我正在/u.test(trimmed)) return 'im-zh'
+  if (/^让我(?!们)/u.test(trimmed)) return 'let-me-zh'
+  if (/^(我需要|我应该|我会|我将)/u.test(trimmed)) return 'i-personal-zh'
   const marker = trimmed.match(/^(good|great|excellent)\.(?:\s|$)/iu)
   if (marker) return `marker-${marker[1].toLowerCase()}`
   return 'other'
 }
 
-function openingPreview(text) {
+function cotOpeningPreview(text) {
   const trimmed = text.trimStart().replace(/\s+/gu, ' ')
   if (!trimmed) return ''
   if (/^\p{Script=Han}/u.test(trimmed)) return [...trimmed].slice(0, 4).join('')
   return trimmed.split(' ').slice(0, 4).join(' ')
 }
 
-function trajectoryLabel(text, markers, opening) {
-  let score = 0
-  if (opening === 'we-need') score += 3
-  if (['let-me', 'the-user-wants', 'i-need', 'i-should', 'i-will', 'i-am', 'im', 'i-apostrophe-am'].includes(opening)) score -= 3
-  if (markers.weNeed > 0 && markers.letMe === 0) score += 2
-  if (markers.letMe > 0) score -= 2
+export const openingPreview = cotOpeningPreview
+
+// v3 chain-of-thought style. Priority per product decision:
+//   1. A single "I'm xxxing" / 我正在 occurrence -> gray-test CoT.
+//   2. A large amount of "let me" / 让我 (>= 3)    -> formal weak (let me) CoT.
+//   3. collective (we need / 我们需要 / let's / 让我们) present and at least
+//      twice the interruptive count -> formal strong (Minimal) CoT.
+//   4. Anything else -> mixed.
+export function cotStyleFromCounts(markers) {
+  const count = (id) => Number(markers?.[id] ?? 0)
+  const progressive = count('imIng') + count('imIngZh')
+  const collective = count('weNeed') + count('weNeedZh') + count('lets') + count('letsZh')
+  const interruptive = count('letMe') + count('letMeZh')
+  let label = 'mixed'
+  if (progressive >= 1) label = 'gray-test'
+  else if (interruptive >= 3) label = 'let-me'
+  else if (collective >= 1 && collective >= interruptive * 2) label = 'minimal'
   return {
-    label: score >= 4 ? 'minimal-like' : score <= -4 ? 'standard-like' : 'ambiguous',
-    score,
+    label,
+    counts: { progressive, collective, interruptive },
     diagnosticOnly: true,
   }
+}
+
+function cotStyle(markers) {
+  return cotStyleFromCounts(markers)
 }
 
 function emptyMarkerCounts() {
@@ -127,11 +150,11 @@ export function summarizeTextBlocks(blocks) {
     },
     markerStarts,
     exactMarkerFirstLines,
-    markerProfile: TRAJECTORY_MARKER_PROFILE.id,
+    markerProfile: COT_MARKER_PROFILE.id,
     markers,
     openingStyle: opening,
-    openingPreview: openingPreview(primaryText),
-    trajectory: trajectoryLabel(primaryText, markers, opening),
+    openingPreview: cotOpeningPreview(primaryText),
+    cot: cotStyle(markers),
   }
 }
 
@@ -194,6 +217,7 @@ function responseState() {
 }
 
 function nonNegativeNumber(value) {
+  if (value === undefined || value === null || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) && number >= 0 ? number : null
 }
@@ -206,6 +230,13 @@ function firstNumber(...values) {
   return null
 }
 
+// Unified prompt-cache normalization. cacheInput prefers the three
+// compatible-provider fields (DeepSeek prompt_cache_hit_tokens, OpenAI-style
+// prompt_tokens_details.cached_tokens, others' cache_read_input_tokens);
+// uncachedInput prefers prompt_cache_miss_tokens and is derived from
+// input - cacheInput when the upstream omits it. hitRate is only reported
+// when both sides are known (directly or derived from the prompt total),
+// so partial usage is never presented as a fabricated hit rate.
 export function summarizeCacheUsage(usage) {
   if (!usage || typeof usage !== 'object') return null
 
@@ -214,29 +245,55 @@ export function summarizeCacheUsage(usage) {
     usage.prompt_tokens_details?.cached_tokens,
     usage.cache_read_input_tokens,
   )
-  let missTokens = firstNumber(
-    usage.prompt_cache_miss_tokens,
-  )
+  let missTokens = firstNumber(usage.prompt_cache_miss_tokens)
   const promptTokens = firstNumber(usage.prompt_tokens, usage.input_tokens)
 
-  if (hitTokens === null && missTokens === null) return null
-  if (hitTokens === null && promptTokens !== null && missTokens !== null) {
-    hitTokens = Math.max(0, promptTokens - missTokens)
-  }
-  if (missTokens === null && promptTokens !== null && hitTokens !== null) {
+  let hitKnown = hitTokens !== null
+  let missKnown = missTokens !== null
+  if (!hitKnown && !missKnown) return null
+  if (!missKnown && hitKnown && promptTokens !== null) {
     missTokens = Math.max(0, promptTokens - hitTokens)
+    missKnown = true
   }
-  if (hitTokens === null) hitTokens = 0
-  if (missTokens === null) {
-    missTokens = firstNumber(usage.input_tokens, usage.cache_creation_input_tokens) ?? 0
+  if (!hitKnown && missKnown && promptTokens !== null) {
+    hitTokens = Math.max(0, promptTokens - missTokens)
+    hitKnown = true
   }
-
-  const totalTokens = hitTokens + missTokens
+  const hit = hitTokens ?? 0
+  const miss = missTokens ?? 0
+  const totalTokens = hit + miss
   return {
-    hitTokens,
-    missTokens,
+    hitTokens: hit,
+    missTokens: miss,
     totalTokens,
-    hitRate: totalTokens > 0 ? hitTokens / totalTokens : null,
+    hitRate: hitKnown && missKnown && totalTokens > 0 ? hit / totalTokens : null,
+  }
+}
+
+// Stable token normalization across provider usage shapes. input/output use
+// the prompt/completion aliases; reasoning prefers the details sub-objects
+// (DeepSeek-style completion_tokens_details / OpenAI-style
+// output_tokens_details) and falls back to usage.reasoning_tokens; content is
+// derived as output - reasoning only when both are known. Raw usage stays on
+// summary.usage untouched; this object is the stable display contract.
+export function summarizeTokenUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null
+  const input = firstNumber(usage.prompt_tokens, usage.input_tokens)
+  const output = firstNumber(usage.completion_tokens, usage.output_tokens)
+  const reasoning = firstNumber(
+    usage.completion_tokens_details?.reasoning_tokens,
+    usage.output_tokens_details?.reasoning_tokens,
+    usage.reasoning_tokens,
+  )
+  const cache = summarizeCacheUsage(usage)
+  return {
+    input,
+    output,
+    reasoning,
+    content: output !== null && reasoning !== null ? Math.max(0, output - reasoning) : null,
+    cacheInput: cache?.hitTokens ?? null,
+    uncachedInput: cache?.missTokens ?? null,
+    hitRate: cache?.hitRate ?? null,
   }
 }
 
@@ -262,7 +319,7 @@ function appendToolCalls(state, choice, calls) {
         ? `id:${call.id}`
         : `position:${choice.nextCallIndex++}`
     if (!choice.calls.has(key)) {
-      choice.calls.set(key, { id: call?.id ?? null, name: '', argumentsChars: 0 })
+      choice.calls.set(key, { id: call?.id ?? null, name: '', arguments: '', argumentsChars: 0 })
     }
     const accumulated = choice.calls.get(key)
     if (call?.id) accumulated.id = call.id
@@ -275,6 +332,7 @@ function appendToolCalls(state, choice, calls) {
       else accumulated.name += fragment
     }
     if (typeof call?.function?.arguments === 'string') {
+      accumulated.arguments += call.function.arguments
       accumulated.argumentsChars += call.function.arguments.length
     }
     state.toolCallFragments += 1
@@ -337,8 +395,9 @@ function finishResponseState(state, format, options = {}) {
     },
     finishReasons,
     usage: state.usage,
+    tokens: summarizeTokenUsage(state.usage),
     cache: summarizeCacheUsage(state.usage),
-    markerProfile: TRAJECTORY_MARKER_PROFILE.id,
+    markerProfile: COT_MARKER_PROFILE.id,
     diagnosticOnly: true,
     reasoningChars: reasoning.chars,
     contentChars: content.chars,
@@ -346,6 +405,29 @@ function finishResponseState(state, format, options = {}) {
     toolCallFragments: state.toolCallFragments,
     toolNames: [...new Set(names)],
   }
+}
+
+// Reassembles the accumulated assistant messages (reasoning, content, and
+// fully joined tool-call arguments) for local diagnostic display. The summary
+// above stays statistical; this raw view is only used by the WebUI dialog.
+function assembledAssistantMessages(state) {
+  const choices = [...state.choices.values()].sort((left, right) => left.index - right.index)
+  return choices.map((choice) => {
+    const message = {
+      role: 'assistant',
+      content: choice.content,
+      reasoning_content: choice.reasoning,
+    }
+    const calls = [...choice.calls.values()]
+    if (calls.length) {
+      message.tool_calls = calls.map((call, index) => ({
+        id: call.id ?? `call_${index}`,
+        type: 'function',
+        function: { name: call.name, arguments: call.arguments ?? '' },
+      }))
+    }
+    return message
+  })
 }
 
 function responseFormat(contentType, initialText = '') {
@@ -440,6 +522,10 @@ export class OpenAiResponseObserver {
       ...options,
       observationTruncated: this.observationTruncated,
     })
+  }
+
+  assembledMessages() {
+    return assembledAssistantMessages(this.state)
   }
 }
 

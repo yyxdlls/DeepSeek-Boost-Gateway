@@ -33,9 +33,9 @@
     <main class="page-shell">
       <section class="intro" aria-labelledby="page-title">
         <div>
-          <p class="eyebrow">LOCAL TRAJECTORY CONSOLE</p>
-          <h1 id="page-title">看清每一次增强轨迹</h1>
-          <p class="lede">观察 Anchor 是否注入、推理有多长、命中了哪些轨迹短语，以及当前回复实际调用了什么工具。</p>
+          <p class="eyebrow">LOCAL COT CONSOLE</p>
+          <h1 id="page-title">看清每一次思维链</h1>
+          <p class="lede">观察 Anchor 是否注入、推理有多长、命中哪些思维链关键字，以及当前回复实际调用了什么工具。</p>
         </div>
         <button id="copy-endpoint" class="endpoint" type="button" title="复制 Harness Base URL">
           <span class="endpoint-label">Harness Base URL</span>
@@ -47,7 +47,7 @@
       <section class="metric-grid" aria-label="Gateway 概览">
         <article class="metric-card accent-cyan">
           <span class="metric-label">运行模式</span>
-          <strong id="metric-mode">—</strong>
+          <strong id="metric-mode" class="text-value">—</strong>
           <small id="metric-mode-note">等待 Gateway</small>
         </article>
         <article class="metric-card accent-violet">
@@ -113,19 +113,7 @@
           </div>
 
           <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>时间 / 模型</th>
-                  <th>状态</th>
-                  <th>模式</th>
-                  <th>推理长度</th>
-                  <th>缓存命中</th>
-                  <th>工具</th>
-                </tr>
-              </thead>
-              <tbody id="request-rows"></tbody>
-            </table>
+            <div id="request-rows" class="request-list" role="list"></div>
             <div id="request-empty" class="empty-state" hidden>
               <span class="empty-glyph" aria-hidden="true">⌁</span>
               <h3>还没有可显示的请求</h3>
@@ -154,7 +142,7 @@
               <p class="section-kicker">MODEL BINDINGS</p>
               <h2>Anchor 管理</h2>
             </div>
-            <span class="live-badge">生成后自动绑定</span>
+            <span class="live-badge">生成后人工挑选</span>
           </div>
           <div id="anchor-list" class="anchor-list">
             <p class="muted">等待 Gateway 配置</p>
@@ -163,9 +151,12 @@
             <summary>创建模型专属 Anchor</summary>
             <form id="anchor-form" class="anchor-form">
               <label><span>目标配置</span><select id="anchor-profile" required></select></label>
-              <label class="wide"><span>锚定提示词</span><textarea id="anchor-prompt" minlength="20" maxlength="8000" rows="7" required placeholder="输入希望模型进入的工作状态和需要使用工具完成的任务。提示词会直接用于候选 Anchor 生成。"></textarea></label>
+              <label class="wide"><span>锚定提示词</span><textarea id="anchor-prompt" minlength="20" maxlength="8000" rows="7" required placeholder="输入希望模型自然进入的工作状态和需要使用工具完成的任务。生成器不会追加关键字引导，由你根据自然输出挑选候选。"></textarea></label>
+              <label class="wide"><span>续接指令（continuation）</span><textarea id="anchor-continuation" minlength="1" maxlength="4000" rows="4" required>Let's continue working on the same long, interconnected software engineering problem.
+Follow the current Harness instructions below and use the tools they provide. Keep the same careful inspect-before-act approach, integrate the conversation that follows with the work already in progress, and never invent tool results.</textarea></label>
               <label><span>候选数</span><input id="anchor-runs" type="number" min="1" max="10" value="3" required></label>
-              <label><span>每候选最多轮数</span><input id="anchor-subturns" type="number" min="2" max="12" value="6" required></label>
+              <label><span>思考强度</span><select id="anchor-reasoning-effort"><option value="max" selected>最高（max）</option><option value="high">高（high）</option><option value="low">低（low）</option></select></label>
+              <label><span>每候选最多轮数</span><input id="anchor-subturns" type="number" min="3" max="12" value="6" required></label>
               <label><span>最大输出 tokens</span><input id="anchor-max-tokens" type="number" min="1" max="384000" value="384000" required></label>
               <p id="anchor-cost-note" class="form-note">最多发起 18 次上游请求；实际通常更少。生成时使用该配置自己的 Gateway Key 和上游地址，配置未启用也可先生成。</p>
               <button class="button primary" type="submit">开始生成</button>
@@ -193,18 +184,24 @@
         <div class="panel-heading compact">
           <div>
             <p class="section-kicker">INDEPENDENT DATA PLANES</p>
-            <h2>Pro / Flash 独立配置</h2>
+            <h2>模型独立配置</h2>
           </div>
           <span class="live-badge">保存后热应用</span>
         </div>
-        <p class="panel-intro">WebUI 使用当前独立管理端口；Pro 和 Flash 各自维护启用状态、数据端口、Key、上游、增强模式和 Anchor。</p>
+        <form id="deployment-form" class="deployment-form">
+          <label><span>数据端口方式</span><select id="deployment-mode"><option value="split">多端口 · 每端口一个模型</option><option value="single">单数据端口 · 多模型</option><option value="all">全部开启</option></select></label>
+          <label><span>“全部开启”的合并数据端口</span><input id="deployment-combined-port" type="number" min="1" max="65535" value="8646" required></label>
+          <button class="button secondary" type="submit">保存部署方式</button>
+          <p id="deployment-note" class="form-note">拓扑变更需要重启 Gateway；当前进程不会立即改绑端口。</p>
+        </form>
+        <p class="panel-intro">WebUI 使用当前独立管理端口；Pro、Flash 与 Vision 各自维护启用状态、数据端口、Key、上游、增强模式和模型专属 Anchor。</p>
         <div id="profile-list" class="profile-grid">
           <p class="muted">等待可管理配置</p>
         </div>
       </section>
 
       <footer>
-        <p>轨迹倾向和关键字仅用于观察；“无明显倾向”表示统计分数没有达到 Minimal 或 Standard 阈值，不是质量判断。</p>
+        <p>思维链判定与关键字仅用于观察；“无明显倾向”表示没有命中任一思维链特征，不是质量判断。本机诊断会保存请求与回复原文，仅用于在本界面查看。</p>
         <span id="last-updated">尚未刷新</span>
       </footer>
     </main>
@@ -230,7 +227,61 @@
       </form>
     </dialog>
 
+    <dialog id="candidate-dialog" class="candidate-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="section-kicker">锚点候选</p>
+          <h2 id="candidate-dialog-title">候选完整对话</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="candidate-dialog-close">×</button>
+      </div>
+      <p class="candidate-dialog-note">以下为该候选的完整生成对话，包含提示词、推理原文、工具调用与工具结果；仅在本机管理界面展示。</p>
+      <div id="candidate-dialog-body" class="candidate-dialog-body">
+        <p class="muted">等待加载</p>
+      </div>
+    </dialog>
+
+    <dialog id="live-dialog" class="candidate-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="section-kicker">实时生成</p>
+          <h2 id="live-dialog-title">实时生成输出</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="live-dialog-close">×</button>
+      </div>
+      <p class="candidate-dialog-note">正在流式生成当前候选的推理与正文；约每 1.2 秒自动刷新并滚动到底部。</p>
+      <div id="live-dialog-body" class="candidate-dialog-body"></div>
+    </dialog>
+
+    <dialog id="messages-dialog" class="candidate-dialog">
+      <div class="dialog-heading">
+        <div>
+            <p class="section-kicker">本次消息</p>
+          <h2 id="messages-dialog-title">本次输入与新回复</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="messages-dialog-close">×</button>
+      </div>
+      <p class="candidate-dialog-note">只展示本次新增输入与本次新回复；内容在本机诊断中保存，截断处会标注。</p>
+      <div id="messages-dialog-body" class="candidate-dialog-body">
+        <p class="muted">等待加载</p>
+      </div>
+    </dialog>
+
+    <dialog id="anchor-dialog" class="candidate-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="section-kicker">锚点只读查看</p>
+          <h2 id="anchor-dialog-title">Anchor 只读查看</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="anchor-dialog-close">×</button>
+      </div>
+      <p class="candidate-dialog-note">以下内容只读，不提供编辑、删除或覆盖入口。完整消息按 Artifact 原样展示，包括以工具结果收尾的旧格式 Anchor。</p>
+      <div id="anchor-dialog-body" class="candidate-dialog-body anchor-dialog-body">
+        <p class="muted">等待加载</p>
+      </div>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/__gateway/app.js" defer></script>
+    <script type="module" src="/__gateway/app.js"></script>
   </body>
 </html>

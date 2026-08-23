@@ -1,9 +1,25 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
+// The "new input" of a request: the user/tool tail after the last assistant
+// message. When there is no assistant message yet, system/developer prompts
+// are excluded and the remaining user/tool messages are the new input.
+export function currentInputMessages(messages) {
+  if (!Array.isArray(messages)) return null
+  let lastAssistant = -1
+  messages.forEach((message, index) => {
+    if (message?.role === 'assistant') lastAssistant = index
+  })
+  const tail = lastAssistant >= 0
+    ? messages.slice(lastAssistant + 1)
+    : messages
+  const input = tail.filter((message) => ['user', 'tool'].includes(message?.role))
+  return input.length ? input : null
+}
+
 export function diagnosticEntry(exchange, profile = 'single') {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     profile,
     requestId: exchange.requestId,
     startedAt: exchange.startedAt,
@@ -17,6 +33,11 @@ export function diagnosticEntry(exchange, profile = 'single') {
         }
       : null,
     transformation: exchange.transformation ?? null,
+    messages: {
+      request: Array.isArray(exchange.request?.rawMessages) ? exchange.request.rawMessages : null,
+      response: Array.isArray(exchange.response?.rawMessages) ? exchange.response.rawMessages : null,
+      currentInput: currentInputMessages(exchange.request?.rawMessages),
+    },
     response: exchange.response
       ? {
           status: exchange.response.status,

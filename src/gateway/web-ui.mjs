@@ -15,6 +15,10 @@ const ASSETS = new Map([
     contentType: 'text/javascript; charset=utf-8',
     body: readFileSync(new URL('app.js', WEB_ROOT)),
   }],
+  ['/__gateway/token-utils.js', {
+    contentType: 'text/javascript; charset=utf-8',
+    body: readFileSync(new URL('token-utils.js', WEB_ROOT)),
+  }],
 ])
 
 function applySecurityHeaders(response) {

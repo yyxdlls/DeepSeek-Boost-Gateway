@@ -1,10 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { gatewaySplitProfiles } from './runtime-config.mjs'
+import { GATEWAY_MODELS, gatewaySplitProfiles } from './runtime-config.mjs'
 
 export const DEFAULT_MANAGED_CONFIG_PATH = resolve('gateway.config.json')
 
-const PROFILE_NAMES = Object.freeze(['pro', 'flash'])
+const PROFILE_NAMES = Object.freeze(['pro', 'flash', 'vision'])
+export const MANAGED_DEPLOYMENT_MODES = Object.freeze(['split', 'single', 'all'])
 const ENV_FIELDS = Object.freeze({
   enabled: 'ENABLED',
   host: 'HOST',
@@ -39,6 +40,24 @@ function validateDocument(document) {
   if (!isRecord(document.profiles)) {
     throw new Error('Managed Gateway config profiles must be an object.')
   }
+  if (document.deployment !== undefined) {
+    if (!isRecord(document.deployment)) {
+      throw new Error('Managed Gateway config deployment must be an object.')
+    }
+    const allowed = new Set(['mode', 'combinedPort'])
+    for (const key of Object.keys(document.deployment)) {
+      if (!allowed.has(key)) throw new Error(`Unsupported deployment setting: ${key}`)
+    }
+    if (own(document.deployment, 'mode') && !MANAGED_DEPLOYMENT_MODES.includes(document.deployment.mode)) {
+      throw new Error('deployment.mode must be split, single, or all.')
+    }
+    if (own(document.deployment, 'combinedPort')) {
+      const value = Number(document.deployment.combinedPort)
+      if (!Number.isSafeInteger(value) || value < 1 || value > 65535) {
+        throw new Error('deployment.combinedPort must be an integer from 1 to 65535.')
+      }
+    }
+  }
   for (const name of Object.keys(document.profiles)) {
     if (!PROFILE_NAMES.includes(name)) throw new Error(`Unknown managed profile: ${name}`)
     if (!isRecord(document.profiles[name])) {
@@ -71,7 +90,16 @@ export async function saveManagedConfig(document, path = DEFAULT_MANAGED_CONFIG_
 
 export function applyManagedConfig(environment = process.env, document = emptyManagedConfig()) {
   validateDocument(document)
-  const merged = { ...environment, GATEWAY_INSTANCE_MODE: 'split' }
+  const deployment = managedDeploymentView(environment, document)
+  const merged = {
+    ...environment,
+    GATEWAY_INSTANCE_MODE: deployment.mode,
+    GATEWAY_COMBINED_PORT: String(deployment.combinedPort),
+  }
+  if (document.deployment?.mode === 'single') {
+    merged.GATEWAY_MODELS = Object.values(GATEWAY_MODELS).join(',')
+    merged.GATEWAY_ENHANCEMENT_MODE = 'bypass'
+  }
   for (const name of PROFILE_NAMES) {
     const values = document.profiles[name]
     if (!isRecord(values)) continue
@@ -134,11 +162,49 @@ export function updateManagedProfile(document, name, patch) {
   if (patch.clearApiKey) next.apiKey = ''
   else if (own(patch, 'apiKey') && patch.apiKey.trim()) next.apiKey = patch.apiKey.trim()
   return {
-    schemaVersion: 1,
+    ...document,
     profiles: {
       ...document.profiles,
       [name]: next,
     },
+  }
+}
+
+export function managedDeploymentView(environment = process.env, document = emptyManagedConfig()) {
+  validateDocument(document)
+  const mode = document.deployment?.mode ?? environment.GATEWAY_INSTANCE_MODE ?? 'single'
+  if (!MANAGED_DEPLOYMENT_MODES.includes(mode)) {
+    throw new Error('Gateway deployment mode must be split, single, or all.')
+  }
+  const rawPort = document.deployment?.combinedPort ?? environment.GATEWAY_COMBINED_PORT ?? 8646
+  const combinedPort = Number(rawPort)
+  if (!Number.isSafeInteger(combinedPort) || combinedPort < 1 || combinedPort > 65535) {
+    throw new Error('Combined Gateway port must be an integer from 1 to 65535.')
+  }
+  return { mode, combinedPort, restartRequired: false }
+}
+
+export function updateManagedDeployment(document, patch, environment = process.env) {
+  validateDocument(document)
+  if (!isRecord(patch)) throw new Error('Deployment update must be a JSON object.')
+  const allowed = new Set(['mode', 'combinedPort'])
+  for (const key of Object.keys(patch)) {
+    if (!allowed.has(key)) throw new Error(`Unsupported deployment setting: ${key}`)
+  }
+  const current = managedDeploymentView(environment, document)
+  const mode = own(patch, 'mode') ? String(patch.mode) : current.mode
+  const combinedPort = own(patch, 'combinedPort')
+    ? Number(patch.combinedPort)
+    : current.combinedPort
+  if (!MANAGED_DEPLOYMENT_MODES.includes(mode)) {
+    throw new Error('deployment mode must be split, single, or all.')
+  }
+  if (!Number.isSafeInteger(combinedPort) || combinedPort < 1 || combinedPort > 65535) {
+    throw new Error('combinedPort must be an integer from 1 to 65535.')
+  }
+  return {
+    ...document,
+    deployment: { mode, combinedPort },
   }
 }
 

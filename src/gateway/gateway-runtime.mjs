@@ -1,12 +1,14 @@
 import {
   applyManagedConfig,
+  managedDeploymentView,
   managedProfileSecrets,
   managedProfileViews,
   saveManagedConfig,
+  updateManagedDeployment,
   updateManagedProfile,
 } from './managed-config.mjs'
 import { spawnGatewayProfileProcess } from './profile-process.mjs'
-import { gatewayRuntimeProfiles } from './runtime-config.mjs'
+import { gatewayRuntimeProfiles, validateGatewayDeployment } from './runtime-config.mjs'
 
 async function stopServer(server) {
   if (server?.gatewayStop) {
@@ -54,6 +56,25 @@ export class GatewayRuntime {
         loadedAnchor: server?.gatewayConfig?.anchors?.[0] ?? null,
       }
     })
+  }
+
+  deploymentView() {
+    return managedDeploymentView(this.environment, this.document)
+  }
+
+  async updateDeployment(patch) {
+    const candidateDocument = updateManagedDeployment(
+      this.document,
+      patch,
+      this.environment,
+    )
+    validateGatewayDeployment(this.effectiveEnvironment(candidateDocument))
+    await saveManagedConfig(candidateDocument, this.configPath)
+    this.document = candidateDocument
+    return {
+      ...this.deploymentView(),
+      restartRequired: true,
+    }
   }
 
   secretProfile(name, document = this.document) {

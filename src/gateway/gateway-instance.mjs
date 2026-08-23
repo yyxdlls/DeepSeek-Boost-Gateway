@@ -1,7 +1,14 @@
 import { DEFAULT_ANCHOR_PATH, loadAnchorArtifact } from './anchor.mjs'
 import { loadDiagnosticHistory } from './diagnostic-history.mjs'
 import { createGatewayServer, listenGateway } from './proxy.mjs'
+import { GATEWAY_MODELS } from './runtime-config.mjs'
 import { join } from 'node:path'
+
+const SUPPORTED_MODELS = new Set(Object.values(GATEWAY_MODELS))
+const ANCHOR_ENV_BY_MODEL = Object.freeze({
+  [GATEWAY_MODELS.flash]: 'GATEWAY_FLASH_ANCHOR_PATH',
+  [GATEWAY_MODELS.vision]: 'GATEWAY_VISION_ANCHOR_PATH',
+})
 
 async function loadModelAnchor(model, path) {
   const anchor = await loadAnchorArtifact(path)
@@ -11,28 +18,34 @@ async function loadModelAnchor(model, path) {
       `Anchor ${anchor.id} was generated for ${sourceModel ?? '(unknown)'}, not ${model}.`,
     )
   }
+  if (anchor.artifact.verification?.copiedBaseline) {
+    throw new Error(
+      `Anchor ${anchor.id} is a copied baseline, not a model-native generation for ${model}.`,
+    )
+  }
   return anchor
 }
 
 export async function loadProfileAnchors(profile) {
   const anchors = {}
   for (const model of profile.models) {
-    if (model === 'deepseek-v4-pro') {
+    if (!SUPPORTED_MODELS.has(model)) {
+      throw new Error(`Unsupported Gateway model: ${model}`)
+    }
+    if (model === GATEWAY_MODELS.pro) {
       anchors[model] = await loadModelAnchor(
         model,
         profile.anchorPaths[model] || DEFAULT_ANCHOR_PATH,
       )
-    } else if (model === 'deepseek-v4-flash') {
+    } else {
       const path = profile.anchorPaths[model]
       if (!path) {
         if (profile.defaultMode === 'bypass') continue
         throw new Error(
-          'GATEWAY_FLASH_ANCHOR_PATH is required when deepseek-v4-flash is enabled.',
+          `${ANCHOR_ENV_BY_MODEL[model]} is required when ${model} uses anchor mode.`,
         )
       }
       anchors[model] = await loadModelAnchor(model, path)
-    } else {
-      throw new Error(`Unsupported Gateway model: ${model}`)
     }
   }
   return anchors
@@ -85,6 +98,10 @@ export async function startGatewayProfile(profile, options = {}) {
     managementEnabled: options.managementEnabled ?? false,
     diagnosticStore,
     onDiagnostic: options.onDiagnostic,
+    deploymentView: options.deploymentView,
+    updateDeployment: options.updateDeployment,
+    listAnchors: options.listAnchors,
+    readAnchorContent: options.readAnchorContent,
   })
   await listenGateway(server, profile.host, profile.port)
   return server
