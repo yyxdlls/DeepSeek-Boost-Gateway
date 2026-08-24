@@ -885,6 +885,11 @@ h1 {
   border-bottom: 1px solid var(--line);
 }
 
+.detail-block .micro-anchor-content,
+#messages-dialog-body .micro-anchor-content {
+  margin: 8px 0 14px;
+}
+
 .io-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -1867,6 +1872,10 @@ h1 {
 
 .conversation-content {
   color: var(--text);
+}
+
+.conversation-content .micro-anchor-inline {
+  color: var(--cyan);
 }
 
 .job-card .job-row {

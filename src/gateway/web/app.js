@@ -632,19 +632,27 @@ function renderContextOccupancy({
   const ioParts = []
   if (promptTokens != null) ioParts.push(`输入 ${formatNumber(promptTokens)} tokens`)
   if (completionTokens != null) ioParts.push(`输出 ${formatNumber(completionTokens)} tokens`)
+  const hasUsage = totalTokens != null || reasoningTokens != null || promptTokens != null || completionTokens != null
+  const hasCot = Boolean(cot?.label)
+  const hasMarkers = Boolean(markers && Object.keys(markers).length)
+  if (!hasUsage && !hasCot && !hasMarkers && messageCount == null) return ''
+  const sideText = [
+    reasoningTokens != null ? `推理 ${formatNumber(reasoningTokens)} tokens` : null,
+    contentTokens != null ? `正文 ${formatNumber(contentTokens)} tokens` : null,
+    ...ioParts,
+  ].filter(Boolean).join(' · ')
   return `
     <div class="context-occupancy" aria-label="上下文占用">
+      ${totalTokens != null ? `
       <div class="context-occupancy-main">
-        <strong>${escapeHtml(totalTokens != null ? formatNumber(totalTokens) : '未返回')}</strong>
+        <strong>${escapeHtml(formatNumber(totalTokens))}</strong>
         <span>生成记录总 tokens${messageCount != null ? ` · ${formatNumber(messageCount)} 条消息` : ''}</span>
-      </div>
-      <div class="context-occupancy-side">
-        <span>推理 ${reasoningTokens != null ? `${formatNumber(reasoningTokens)} tokens` : '未返回'} · 正文 ${contentTokens != null ? `${formatNumber(contentTokens)} tokens` : '未返回'}${ioParts.length ? ` · ${ioParts.join(' · ')}` : ''}</span>
-      </div>
-      <div class="context-occupancy-cot">
+      </div>` : ''}
+      ${sideText ? `<div class="context-occupancy-side"><span>${escapeHtml(sideText)}</span></div>` : ''}
+      ${hasCot ? `<div class="context-occupancy-cot">
         <span>思维链类型</span>
         ${trajectoryBadge(cot)}
-      </div>
+      </div>` : ''}
       ${renderMarkers(markers)}
     </div>`
 }
@@ -727,23 +735,58 @@ function responseReason(entry, summary) {
   return '—'
 }
 
-function microAnchorDiagnosticBlock(transformation) {
+function diagnosticMicroAnchor(transformation) {
   const micro = transformation?.microAnchor
-  const historyFingerprint = transformation?.thirdPartyHistoryFingerprint
-  if (!micro && !historyFingerprint) return ''
+  const historyFingerprint = transformation?.thirdPartyHistoryFingerprint ?? null
+  if (!micro && !historyFingerprint) return null
+  const definition = micro?.id ? microAnchorDefinitionById(micro.id) : null
+  const storedFingerprint = micro?.contentFingerprint ?? null
+  const liveFingerprint = definition?.contentFingerprint ?? null
+  return {
+    micro,
+    historyFingerprint,
+    name: definition?.name ?? null,
+    content: typeof definition?.content === 'string' ? definition.content : '',
+    hasDefinition: Boolean(definition),
+    fingerprintMatches: Boolean(storedFingerprint && liveFingerprint && storedFingerprint === liveFingerprint),
+  }
+}
+
+function microAnchorTextBlock(diagnostic, { note } = {}) {
+  if (!diagnostic) return ''
+  if (diagnostic.content) {
+    const mismatch = diagnostic.hasDefinition && diagnostic.micro?.contentFingerprint && !diagnostic.fingerprintMatches
+      ? '<p class="muted">当前定义正文已变更；下面是现在的微锚点文本，不一定等于当时追加的内容。</p>'
+      : ''
+    return `${note ?? ''}${mismatch}<pre class="micro-anchor-content">${escapeHtml(diagnostic.content)}</pre>`
+  }
+  if (diagnostic.micro?.applied) {
+    return `${note ?? ''}<p class="muted">当时追加过微锚点，但当前库里已找不到对应正文，只留下指纹。</p>`
+  }
+  return note ?? ''
+}
+
+function microAnchorDiagnosticBlock(transformation) {
+  const diagnostic = diagnosticMicroAnchor(transformation)
+  if (!diagnostic) return ''
+  const micro = diagnostic.micro
   const reason = micro?.reason ?? (micro?.applied ? 'applied' : 'not-applied')
+  const title = diagnostic.name || micro?.id || '微锚点'
   return `
     <section class="detail-block">
-      <div class="detail-block-heading"><h3>微锚点</h3><span class="scope-badge">micro-anchor</span></div>
-      <p class="muted">独立诊断：追加发生在第三方 user 历史上，不会出现在「本次原始消息」里。</p>
+      <div class="detail-block-heading"><h3>微锚点信息</h3><span class="scope-badge">micro-anchor</span></div>
+      ${microAnchorTextBlock(diagnostic, {
+        note: `<p class="muted">${escapeHtml(diagnostic.name ? `本次使用「${diagnostic.name}」` : '本次使用的微锚点正文')}</p>`,
+      })}
       <dl class="fact-list">
+        <div><dt>名称</dt><dd>${escapeHtml(title)}</dd></div>
         <div><dt>开关</dt><dd>${micro?.enabled ? '开启' : '关闭'}</dd></div>
         <div><dt>保存项</dt><dd>${escapeHtml(micro?.id ?? '—')}</dd></div>
         <div><dt>来源</dt><dd>${escapeHtml(micro?.source ?? '—')}</dd></div>
         <div><dt>已追加</dt><dd>${micro?.applied ? `是 · ${formatNumber(micro.appliedUserMessageCount ?? 0)} 条 user` : '否'}</dd></div>
         <div><dt>原因</dt><dd>${escapeHtml(reason)}</dd></div>
         <div><dt>内容指纹</dt><dd><code>${escapeHtml(micro?.contentFingerprint ?? '—')}</code></dd></div>
-        <div><dt>第三方历史指纹</dt><dd><code>${escapeHtml(historyFingerprint ?? '—')}</code></dd></div>
+        <div><dt>第三方历史指纹</dt><dd><code>${escapeHtml(diagnostic.historyFingerprint ?? '—')}</code></dd></div>
       </dl>
     </section>`
 }
@@ -755,7 +798,7 @@ function renderDetail() {
       <div class="detail-placeholder">
         <span aria-hidden="true">↳</span>
         <h2>选择一次请求</h2>
-        <p>这里拆开显示基础信息、推理（锚点外）与 Anchor 的思维链统计，并可查看本轮完整消息。</p>
+        <p>这里先看锚点外推理和微锚点，再看基础信息与 Anchor 统计，并可查看本轮完整消息。</p>
       </div>`
     return
   }
@@ -789,21 +832,17 @@ function renderDetail() {
       </div>
     </div>
 
+    ${summaryBlock('锚点外推理（本次回复）', '本次回复', responseSummary, '只统计这一次上游新生成的内容')}
+    ${microAnchorDiagnosticBlock(entry.transformation)}
+
     <section class="detail-block">
       <div class="detail-block-heading"><h3>基础信息</h3><span class="scope-badge">usage</span></div>
       <div class="basic-stats">${basicInfoFacts(entry, responseSummary)}</div>
     </section>
 
-    ${summaryBlock('锚点外推理（本次回复）', '本次回复', responseSummary, `只统计这一次上游新生成的内容 · 开头「${escapeHtml(openingPreview(responseSummary?.reasoning))}」`)}
     ${summaryBlock('锚点（Anchor 历史）', '锚点历史', anchorHistory, entry.transformation
       ? `Anchor ${entry.transformation.anchorId ?? '—'} · 注入 ${formatNumber(entry.transformation.anchorMessageCount ?? 0)} 条消息`
-      : '本次请求没有注入 Anchor。', `${renderContextOccupancy({
-        usage: null,
-        messageCount: entry.transformation?.anchorMessageCount ?? null,
-        cot: anchorHistory?.reasoning?.cot ?? null,
-        markers: anchorHistory?.reasoning?.markers ?? null,
-      })}<p class="subheading">工具调用历史</p>${renderTools(anchorHistory?.tools?.names ?? anchorHistory?.toolNames ?? [])}`)}
-    ${microAnchorDiagnosticBlock(entry.transformation)}
+      : '本次请求没有注入 Anchor。', `<p class="subheading">工具调用历史</p>${renderTools(anchorHistory?.tools?.names ?? anchorHistory?.toolNames ?? [])}`)}
 
     <section class="detail-block">
       <div class="detail-block-heading"><h3>状态</h3><span class="scope-badge">status</span></div>
@@ -1352,16 +1391,25 @@ function catNTable(text) {
   return `<div class="catn-table">${fields.join('')}</div>`
 }
 
-function renderConversationContent(content) {
-  if (typeof content !== 'string' || content === '') return null
+function renderMicroAnchorSuffix(content) {
+  if (!content) return '<span class="muted">\n\n（当时追加过微锚点，当前库里已找不到对应正文）</span>'
+  return `<span class="micro-anchor-inline">${escapeHtml(`\n\n${content}`)}</span>`
+}
+
+function renderConversationContent(content, coloredSuffix = null) {
+  const suffixHtml = coloredSuffix != null ? renderMicroAnchorSuffix(coloredSuffix) : ''
+  if (typeof content !== 'string' || content === '') {
+    return suffixHtml ? `<pre class="conversation-content">${suffixHtml}</pre>` : null
+  }
   const catn = catNTable(content)
-  if (catn) return catn
-  return `<pre class="conversation-content">${escapeHtml(content)}</pre>`
+  if (catn) return suffixHtml ? `${catn}<pre class="conversation-content">${suffixHtml}</pre>` : catn
+  return `<pre class="conversation-content">${escapeHtml(content)}${suffixHtml}</pre>`
 }
 
 // 共用入口：先预计算「tool-call id → 该消息序号」映射，再逐条渲染。
 // 三个对话弹窗（候选 / 本次请求 / Anchor 只读）共用同一渲染器与语义。
-function conversationBlocks(messages, offset = 0) {
+
+function conversationBlocks(messages, offset = 0, options = {}) {
   const list = Array.isArray(messages) ? messages : []
   if (!list.length) return ''
   const callToIndex = new Map()
@@ -1382,6 +1430,8 @@ function conversationBlocks(messages, offset = 0) {
     callToIndex,
     resultToIndex,
     lastAssistantIndex,
+    attachMicroAnchor: Boolean(options.attachMicroAnchor),
+    microAnchorContent: options.microAnchorContent ?? '',
   })).join('')
 }
 
@@ -1429,7 +1479,10 @@ function conversationBlock(message, index, context = {}) {
     }
     if (!sections.length) sections.push('<pre class="conversation-content muted">（空消息）</pre>')
   } else {
-    const contentBlock = renderConversationContent(content)
+    const suffix = role === 'user' && context.attachMicroAnchor
+      ? (context.microAnchorContent ?? '')
+      : null
+    const contentBlock = renderConversationContent(content, suffix)
     if (contentBlock) sections.push(contentBlock)
     else if (!reasoning && !calls.length) sections.push('<pre class="conversation-content muted">（空消息）</pre>')
   }
@@ -1440,7 +1493,7 @@ function conversationBlock(message, index, context = {}) {
       <summary class="message-full-button">查看完整消息</summary>
       <div class="message-full-body">
         ${reasoning ? `<p class="message-full-label">思维链</p><pre class="conversation-reasoning">${escapeHtml(reasoning)}</pre>` : ''}
-        ${content ? `<p class="message-full-label">正文</p><pre class="conversation-content">${escapeHtml(content)}</pre>` : ''}
+        ${content || (role === 'user' && context.attachMicroAnchor) ? `<p class="message-full-label">正文</p><pre class="conversation-content">${escapeHtml(content ?? '')}${role === 'user' && context.attachMicroAnchor ? renderMicroAnchorSuffix(context.microAnchorContent) : ''}</pre>` : ''}
         ${calls.length ? `<p class="message-full-label">工具调用 · ${calls.length}</p><div class="tool-call-list">${calls.map((call) => {
           const id = String(call?.id ?? '—')
           const name = call?.function?.name ?? 'tool'
@@ -1549,14 +1602,25 @@ function renderRequestMessages(entry) {
     : null
   const currentInput = savedCurrent ?? GatewayTokenUtils.currentInputMessages(requestMessages)
   const inputMessages = currentInput ?? []
+  const diagnostic = diagnosticMicroAnchor(entry.transformation)
+  const hasMicro = Boolean(diagnostic?.micro?.applied)
+  const inputHasUser = inputMessages.some((message) => message?.role === 'user')
   if (!inputMessages.length && !responseMessages.length) {
     elements.messagesDialogBody.innerHTML = '<p class="muted">没有可查看的原始消息。</p>'
     return
   }
   const blocks = []
+  if (hasMicro) {
+    blocks.push(inputHasUser
+      ? '<p class="muted">微锚点已接到每条第三方 user 正文末尾（青色）。</p>'
+      : '<p class="muted">微锚点已接到更早的第三方 user 正文末尾；本次新增输入里没有 user 消息。</p>')
+  }
   if (inputMessages.length) {
     blocks.push('<p class="subheading">本次新增输入</p>')
-    blocks.push(conversationBlocks(inputMessages))
+    blocks.push(conversationBlocks(inputMessages, 0, {
+      attachMicroAnchor: hasMicro,
+      microAnchorContent: diagnostic?.content ?? '',
+    }))
   }
   if (responseMessages.length) {
     const offset = inputMessages.length
