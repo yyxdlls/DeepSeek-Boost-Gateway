@@ -2,7 +2,7 @@ import { once } from 'node:events'
 import http from 'node:http'
 import { join, resolve } from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
-import { applyAnchorToChatRequest } from './anchor.mjs'
+import { transformChatCompletionsRequest } from './chat-request-transform.mjs'
 import { RotatingJsonlWriter } from './jsonl-writer.mjs'
 import { diagnosticEntry } from './diagnostic-history.mjs'
 import {
@@ -12,6 +12,10 @@ import {
   summarizeResponseBody,
 } from './trajectory-stats.mjs'
 import { serveWebUiRequest } from './web-ui.mjs'
+import { handleAnchorJobRoutes } from './management-routes.mjs'
+import { DEFAULT_UPSTREAM_BASE_URL, GATEWAY_MODELS } from './runtime-config.mjs'
+
+const OFFICIAL_MODELS = new Set(Object.values(GATEWAY_MODELS))
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -50,6 +54,21 @@ function positiveInteger(value, fallback) {
 
 function anchorModel(anchor) {
   return anchor?.artifact?.source?.model ?? anchor?.source?.model ?? null
+}
+
+function configuredMicroAnchors(options) {
+  const snapshots = new Map()
+  const source = options.microAnchors
+  if (source instanceof Map) {
+    for (const [model, snapshot] of source.entries()) {
+      if (snapshot) snapshots.set(model, snapshot)
+    }
+  } else if (source && typeof source === 'object') {
+    for (const [model, snapshot] of Object.entries(source)) {
+      if (snapshot) snapshots.set(model, snapshot)
+    }
+  }
+  return snapshots
 }
 
 function configuredAnchors(options) {
@@ -270,6 +289,9 @@ function capRawMessages(messages) {
         },
       }))
     }
+    if (typeof message?.tool_call_id === 'string' && message.tool_call_id) {
+      capped.tool_call_id = message.tool_call_id
+    }
     return capped
   })
 }
@@ -368,22 +390,198 @@ function captureChunk(chunks, chunk, capturedBytes, limitBytes) {
   return capturedBytes + kept.length
 }
 
+function asAnchorMap(source) {
+  const anchors = new Map()
+  if (source instanceof Map) {
+    for (const [model, anchor] of source.entries()) {
+      if (anchor) anchors.set(model, anchor)
+    }
+    return anchors
+  }
+  if (source && typeof source === 'object') {
+    for (const [model, anchor] of Object.entries(source)) {
+      if (anchor) anchors.set(model, anchor)
+    }
+  }
+  return anchors
+}
+
+function asMicroAnchorMap(source) {
+  const snapshots = new Map()
+  if (source instanceof Map) {
+    for (const [model, snapshot] of source.entries()) {
+      if (snapshot) snapshots.set(model, snapshot)
+    }
+    return snapshots
+  }
+  if (source && typeof source === 'object') {
+    for (const [model, snapshot] of Object.entries(source)) {
+      if (snapshot) snapshots.set(model, snapshot)
+    }
+  }
+  return snapshots
+}
+
+function normalizePlane(input, fallbacks = {}) {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Gateway model plane must be an object.')
+  }
+  const model = String(input.model ?? fallbacks.model ?? '')
+  const upstream = new URL(input.upstreamBaseUrl || fallbacks.upstreamBaseUrl || DEFAULT_UPSTREAM_BASE_URL)
+  if (!['http:', 'https:'].includes(upstream.protocol)) {
+    throw new Error('Gateway plane upstreamBaseUrl must use http or https.')
+  }
+  const anchors = asAnchorMap(input.anchors)
+  if (input.anchor) {
+    const sourceModel = anchorModel(input.anchor) ?? model
+    anchors.set(sourceModel, input.anchor)
+  }
+  const microAnchors = asMicroAnchorMap(input.microAnchors)
+  if (input.microAnchor && model) microAnchors.set(model, input.microAnchor)
+  const gatewayApiKey = String(input.gatewayApiKey ?? fallbacks.gatewayApiKey ?? '')
+  return {
+    name: String(input.name ?? fallbacks.name ?? ''),
+    model,
+    enabled: input.enabled !== false,
+    upstreamBaseUrl: upstream.toString(),
+    gatewayApiKey,
+    gatewayApiKeySource: input.gatewayApiKeySource
+      ?? fallbacks.gatewayApiKeySource
+      ?? (gatewayApiKey ? 'profile' : 'none'),
+    defaultMode: (input.defaultMode ?? fallbacks.defaultMode) === 'anchor' ? 'anchor' : 'bypass',
+    anchors,
+    microAnchors,
+  }
+}
+
+function snapshotPlane(plane) {
+  return {
+    name: plane.name,
+    model: plane.model,
+    enabled: plane.enabled,
+    upstreamBaseUrl: plane.upstreamBaseUrl,
+    gatewayApiKey: plane.gatewayApiKey,
+    gatewayApiKeySource: plane.gatewayApiKeySource,
+    defaultMode: plane.defaultMode,
+    anchors: new Map(plane.anchors),
+    microAnchors: new Map(plane.microAnchors),
+  }
+}
+
+function isMultiModelListener(config) {
+  return config.allowedModels.size > 1 || config.modelPlanes.size > 1
+}
+
+function takePlaneSnapshot(config, model) {
+  if (model && config.modelPlanes.has(model)) {
+    return snapshotPlane(config.modelPlanes.get(model))
+  }
+  if (config.fallbackPlane) {
+    return snapshotPlane({
+      ...config.fallbackPlane,
+      model: model || config.fallbackPlane.model,
+    })
+  }
+  return null
+}
+
+function collectAnchors(config) {
+  const anchors = new Map(config.anchors)
+  for (const plane of config.modelPlanes.values()) {
+    for (const [model, anchor] of plane.anchors) anchors.set(model, anchor)
+  }
+  if (config.fallbackPlane) {
+    for (const [model, anchor] of config.fallbackPlane.anchors) anchors.set(model, anchor)
+  }
+  return anchors
+}
+
+function publicPlaneView(plane) {
+  const anchor = plane.anchors.get(plane.model)
+  const micro = plane.microAnchors.get(plane.model)
+  return {
+    name: plane.name,
+    model: plane.model,
+    enabled: plane.enabled,
+    mode: plane.defaultMode,
+    upstreamBaseUrl: plane.upstreamBaseUrl,
+    gatewayApiKeyConfigured: Boolean(plane.gatewayApiKey),
+    gatewayApiKeySource: plane.gatewayApiKeySource,
+    microAnchorEnabled: Boolean(micro?.enabled),
+    anchor: anchor ? {
+      model: plane.model,
+      id: anchor.id ?? anchor.artifact?.id ?? null,
+      fingerprint: anchor.fingerprint ?? anchor.artifact?.artifactFingerprint ?? null,
+      path: anchor.path ?? null,
+    } : null,
+  }
+}
+
+function listenerPlanes(config) {
+  if (config.modelPlanes.size > 0) return [...config.modelPlanes.values()]
+  return config.fallbackPlane ? [config.fallbackPlane] : []
+}
+
+function enabledModelIds(config) {
+  const planes = listenerPlanes(config).filter((plane) => plane.enabled)
+  const ids = planes.map((plane) => plane.model).filter(Boolean)
+  if (ids.length > 0) {
+    return config.allowedModels.size > 0
+      ? ids.filter((model) => config.allowedModels.has(model))
+      : ids
+  }
+  if (config.allowedModels.size > 0) return [...config.allowedModels]
+  return [...OFFICIAL_MODELS]
+}
+
+function publicProfileFromPlane(plane) {
+  const view = publicPlaneView(plane)
+  return {
+    name: view.name || view.model,
+    model: view.model,
+    enabled: view.enabled,
+    upstreamBaseUrl: view.upstreamBaseUrl,
+    apiKeyConfigured: view.gatewayApiKeyConfigured,
+    apiKeySource: view.gatewayApiKeySource,
+    enhancementMode: view.mode,
+    anchorPath: view.anchor?.path ?? '',
+    anchorConfigured: Boolean(view.anchor),
+    microAnchor: {
+      enabled: view.microAnchorEnabled,
+    },
+    running: true,
+  }
+}
+
+function officialModelFromPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined
+  if (!Object.prototype.hasOwnProperty.call(payload, 'model')) return undefined
+  return payload.model
+}
+
 function publicConfig(config) {
-  const anchors = [...config.anchors.entries()].map(([model, anchor]) => ({
+  const anchors = [...collectAnchors(config).entries()].map(([model, anchor]) => ({
     model,
     id: anchor.id ?? anchor.artifact?.id ?? null,
     fingerprint: anchor.fingerprint ?? anchor.artifact?.artifactFingerprint ?? null,
     path: anchor.path ?? null,
   }))
+  const planes = listenerPlanes(config).map(publicPlaneView)
+  const configuredKeyCount = planes.filter((plane) => plane.gatewayApiKeyConfigured).length
+  const enabledPlanes = planes.filter((plane) => plane.enabled)
+  const multi = isMultiModelListener(config)
   return {
     instanceId: config.instanceId,
     version: config.version,
     deploymentMode: config.deploymentMode,
     profile: config.profileName,
-    mode: config.defaultMode,
+    ...(multi ? {} : {
+      mode: config.defaultMode,
+      upstreamBaseUrl: config.upstreamBaseUrl,
+      gatewayApiKeySource: config.gatewayApiKeySource,
+    }),
     host: config.host,
     port: config.port,
-    upstreamBaseUrl: config.upstreamBaseUrl,
     captureMode: config.captureMode,
     captureLimitBytes: config.captureLimitBytes,
     responseObservationLimitBytes: config.responseObservationLimitBytes,
@@ -392,12 +590,15 @@ function publicConfig(config) {
     logMaxBytes: config.logMaxBytes,
     logMaxFiles: config.logMaxFiles,
     trajectoryMarkerProfile: COT_MARKER_PROFILE,
-    gatewayApiKeyConfigured: Boolean(config.gatewayApiKey),
-    gatewayApiKeySource: config.gatewayApiKeySource,
+    gatewayApiKeyConfigured: configuredKeyCount > 0,
+    allGatewayApiKeysConfigured:
+      enabledPlanes.length > 0 && enabledPlanes.every((plane) => plane.gatewayApiKeyConfigured),
+    gatewayApiKeyConfiguredCount: configuredKeyCount,
     managementAuthRequired: Boolean(config.managementToken),
     credentialPolicy: 'gateway-only',
-    callerAuthorization: 'discarded; GATEWAY_UPSTREAM_API_KEY is the only upstream credential',
+    callerAuthorization: 'discarded; the selected model plane key is the only upstream credential',
     models: [...config.allowedModels],
+    planes,
     webUiPath: config.webUiEnabled ? '/' : null,
     managementEnabled: config.managementEnabled,
     logFile: config.logFile,
@@ -435,12 +636,29 @@ function bodyCapture(config, text, contentType, truncated) {
 export function createGatewayServer(options = {}) {
   const logDir = resolve(options.logDir ?? join(process.cwd(), 'results', 'gateway'))
   const anchors = configuredAnchors(options)
-  const upstreamBaseUrl = new URL(
-    options.upstreamBaseUrl ?? 'https://api.deepseek.com',
-  )
+  const listenerUpstream = options.upstreamBaseUrl ?? DEFAULT_UPSTREAM_BASE_URL
+  const upstreamBaseUrl = new URL(listenerUpstream)
   if (!['http:', 'https:'].includes(upstreamBaseUrl.protocol)) {
     throw new Error('Gateway upstreamBaseUrl must use http or https.')
   }
+  const modelPlanes = new Map()
+  for (const plane of options.modelPlanes ?? []) {
+    const normalized = normalizePlane(plane)
+    if (normalized.model) modelPlanes.set(normalized.model, normalized)
+  }
+  const fallbackPlane = modelPlanes.size === 0
+    ? normalizePlane({
+        name: options.profileName ?? 'single',
+        model: Array.isArray(options.allowedModels) ? options.allowedModels[0] ?? '' : '',
+        enabled: true,
+        upstreamBaseUrl: upstreamBaseUrl.toString(),
+        gatewayApiKey: options.gatewayApiKey ?? '',
+        gatewayApiKeySource: options.gatewayApiKeySource ?? (options.gatewayApiKey ? 'gateway' : 'none'),
+        defaultMode: options.defaultMode === 'anchor' ? 'anchor' : 'bypass',
+        anchors,
+        microAnchors: configuredMicroAnchors(options),
+      })
+    : null
   const config = {
     instanceId: options.instanceId ?? null,
     version: options.version ?? null,
@@ -454,7 +672,10 @@ export function createGatewayServer(options = {}) {
     managementToken: options.managementToken ?? '',
     defaultMode: options.defaultMode === 'anchor' ? 'anchor' : 'bypass',
     allowedModels: new Set(options.allowedModels ?? []),
+    modelPlanes,
+    fallbackPlane,
     anchors,
+    microAnchors: configuredMicroAnchors(options),
     captureMode: ['off', 'metadata', 'full'].includes(options.captureMode)
       ? options.captureMode
       : 'metadata',
@@ -482,6 +703,14 @@ export function createGatewayServer(options = {}) {
     updateDeployment: typeof options.updateDeployment === 'function' ? options.updateDeployment : null,
     listAnchors: typeof options.listAnchors === 'function' ? options.listAnchors : null,
     readAnchorContent: typeof options.readAnchorContent === 'function' ? options.readAnchorContent : null,
+    deleteAnchor: typeof options.deleteAnchor === 'function' ? options.deleteAnchor : null,
+    updateProfile: typeof options.updateProfile === 'function' ? options.updateProfile : null,
+    profileViews: typeof options.profileViews === 'function' ? options.profileViews : null,
+    anchorJobs: options.anchorJobs ?? null,
+    listMicroAnchors: typeof options.listMicroAnchors === 'function' ? options.listMicroAnchors : null,
+    createMicroAnchor: typeof options.createMicroAnchor === 'function' ? options.createMicroAnchor : null,
+    updateMicroAnchor: typeof options.updateMicroAnchor === 'function' ? options.updateMicroAnchor : null,
+    deleteMicroAnchor: typeof options.deleteMicroAnchor === 'function' ? options.deleteMicroAnchor : null,
   }
   config.trafficWriter = new RotatingJsonlWriter(config.logFile, {
     maxBytes: config.logMaxBytes,
@@ -491,7 +720,13 @@ export function createGatewayServer(options = {}) {
     maxBytes: config.logMaxBytes,
     maxFiles: config.logMaxFiles,
   })
-  if (config.defaultMode === 'anchor' && config.anchors.size === 0) {
+  if (config.modelPlanes.size > 0) {
+    for (const plane of config.modelPlanes.values()) {
+      if (plane.enabled && plane.defaultMode === 'anchor' && !plane.anchors.get(plane.model)) {
+        throw new Error(`Gateway plane ${plane.name || plane.model} is in anchor mode but has no loaded Anchor.`)
+      }
+    }
+  } else if (config.defaultMode === 'anchor' && config.anchors.size === 0) {
     throw new Error('Gateway anchor mode requires at least one loaded anchor artifact.')
   }
   if (!isLoopbackHost(config.host) && !config.managementToken) {
@@ -558,6 +793,48 @@ export function createGatewayServer(options = {}) {
       return
     }
 
+    if (
+      config.managementEnabled &&
+      request.method === 'DELETE' &&
+      localUrl.pathname === '/__gateway/diagnostics'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Clearing diagnostics requires a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        const input = await readManagementJson(request)
+        if (input.confirmation !== '\u6e05\u7a7a\u5168\u90e8\u8bf7\u6c42') {
+          sendJson(response, 400, {
+            error: {
+              type: 'gateway_diagnostics_confirmation_required',
+              message: '\u5fc5\u987b\u51c6\u786e\u8f93\u5165\u201c\u6e05\u7a7a\u5168\u90e8\u8bf7\u6c42\u201d\u624d\u80fd\u5220\u9664\u8bca\u65ad\u548c\u8f6e\u8f6c\u65e5\u5fd7\u3002',
+            },
+          })
+          return
+        }
+        const deleted = await server.gatewayClearDiagnostics()
+        sendJson(response, 200, { schemaVersion: 1, deleted })
+      } catch (error) {
+        sendJson(response, 500, {
+          error: {
+            type: 'gateway_diagnostics_clear_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
     const diagnosticMatch = config.managementEnabled && request.method === 'GET'
       ? localUrl.pathname.match(/^\/__gateway\/diagnostics\/([0-9a-f-]+)$/i)
       : null
@@ -584,11 +861,18 @@ export function createGatewayServer(options = {}) {
         sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
         return
       }
+      const profiles = config.profileViews
+        ? config.profileViews().map((profile) => {
+            if (!profile || typeof profile !== 'object') return profile
+            const { apiKey: _apiKey, gatewayApiKey: _gatewayApiKey, ...safe } = profile
+            return safe
+          })
+        : listenerPlanes(config).map(publicProfileFromPlane)
       sendJson(response, 200, {
         schemaVersion: 1,
         deploymentMode: config.deploymentMode,
         deployment: config.deploymentView(),
-        profiles: [],
+        profiles,
       })
       return
     }
@@ -627,6 +911,129 @@ export function createGatewayServer(options = {}) {
     if (
       config.managementEnabled &&
       request.method === 'GET' &&
+      localUrl.pathname === '/__gateway/micro-anchors'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      try {
+        sendJson(response, 200, {
+          schemaVersion: 2,
+          microAnchors: config.listMicroAnchors ? await config.listMicroAnchors() : { definitions: [], profiles: {} },
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_view_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'POST' &&
+      localUrl.pathname === '/__gateway/micro-anchors'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!config.createMicroAnchor) {
+        sendJson(response, 501, { error: { type: 'gateway_micro_anchor_unavailable' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, { error: { type: 'gateway_management_mutation_forbidden' } })
+        return
+      }
+      try {
+        sendJson(response, 200, await config.createMicroAnchor(await readManagementJson(request)))
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_create_failed',
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
+          },
+        })
+      }
+      return
+    }
+
+    const singleMicroAnchorMatch = config.managementEnabled
+      ? localUrl.pathname.match(/^\/__gateway\/micro-anchors\/([^/]+)$/)
+      : null
+    if (singleMicroAnchorMatch && ['PATCH', 'DELETE'].includes(request.method)) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      const handler = request.method === 'PATCH' ? config.updateMicroAnchor : config.deleteMicroAnchor
+      if (!handler) {
+        sendJson(response, 501, { error: { type: 'gateway_micro_anchor_unavailable' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, { error: { type: 'gateway_management_mutation_forbidden' } })
+        return
+      }
+      try {
+        const id = decodeURIComponent(singleMicroAnchorMatch[1])
+        const payload = request.method === 'PATCH' ? await readManagementJson(request) : await readManagementJson(request)
+        sendJson(response, 200, request.method === 'PATCH' ? await handler(id, payload) : await handler(id))
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_update_failed',
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
+          },
+        })
+      }
+      return
+    }
+
+    const singleProfileMatch = config.managementEnabled && request.method === 'PATCH'
+      ? localUrl.pathname.match(/^\/__gateway\/config\/profiles\/(pro|flash|vision)$/)
+      : null
+    if (singleProfileMatch) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!config.updateProfile) {
+        sendJson(response, 501, { error: { type: 'gateway_config_read_only' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, { error: { type: 'gateway_management_mutation_forbidden' } })
+        return
+      }
+      try {
+        const result = await config.updateProfile(singleProfileMatch[1], await readManagementJson(request))
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          profile: result?.profile ?? result,
+          ...(result?.documentView ? result : {}),
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: error?.type ?? 'gateway_config_update_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'GET' &&
       localUrl.pathname === '/__gateway/anchors'
     ) {
       if (!managementAuthorized(request, config)) {
@@ -641,6 +1048,58 @@ export function createGatewayServer(options = {}) {
       } catch (error) {
         sendJson(response, 500, {
           error: { type: 'gateway_anchor_catalog_failed', message: error?.message ?? String(error) },
+        })
+      }
+      return
+    }
+
+    if (
+      config.managementEnabled &&
+      request.method === 'DELETE' &&
+      localUrl.pathname === '/__gateway/anchors'
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (!config.deleteAnchor) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_delete_unavailable' } })
+        return
+      }
+      if (!managementMutationAuthorized(request)) {
+        sendJson(response, 403, { error: { type: 'gateway_management_mutation_forbidden' } })
+        return
+      }
+      try {
+        // Accept exactly one of path/id, either in the JSON body or in the
+        // query string; the catalog lookup enforces the exactly-one rule.
+        let input = await readManagementJson(request)
+        if (!(input?.path || input?.id)) {
+          const path = localUrl.searchParams.get('path')
+          const id = localUrl.searchParams.get('id')
+          if (path !== null || id !== null) {
+            input = {
+              ...(path !== null ? { path } : {}),
+              ...(id !== null ? { id } : {}),
+            }
+          }
+        }
+        const deleted = await config.deleteAnchor(input)
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          deleted: { id: deleted.id, path: deleted.path },
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.type ?? (
+              error?.statusCode === 404
+                ? 'gateway_anchor_not_found'
+                : 'gateway_anchor_delete_failed'
+            ),
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
+          },
         })
       }
       return
@@ -682,12 +1141,41 @@ export function createGatewayServer(options = {}) {
       return
     }
 
+    if (config.managementEnabled && localUrl.pathname.startsWith('/__gateway/anchors/jobs')) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (await handleAnchorJobRoutes({
+        request,
+        response,
+        pathname: localUrl.pathname,
+        sendJson,
+        readJson: readManagementJson,
+        mutationAuthorized: managementMutationAuthorized,
+        anchorJobs: config.anchorJobs,
+      })) return
+    }
+
     if (localUrl.pathname.startsWith('/__gateway/')) {
       sendJson(response, 404, {
         error: {
           type: 'gateway_management_route_not_found',
           path: localUrl.pathname,
         },
+      })
+      return
+    }
+
+    const localPath = localUrl.pathname.replace(/\/+$/, '') || '/'
+    if (request.method === 'GET' && (localPath === '/v1/models' || localPath === '/models')) {
+      sendJson(response, 200, {
+        object: 'list',
+        data: enabledModelIds(config).map((id) => ({
+          id,
+          object: 'model',
+          owned_by: 'deepseek-boost-gateway',
+        })),
       })
       return
     }
@@ -711,172 +1199,164 @@ export function createGatewayServer(options = {}) {
       return
     }
 
-    const upstreamUrl = buildUpstreamUrl(config.upstreamBaseUrl, request.url ?? '/')
-    const { headers, credentialSource } = buildUpstreamHeaders(
-      request.headers,
-      config.gatewayApiKey,
-    )
     const requestText = requestBody.toString('utf8')
-    const requestContentType = headers.get('content-type') ?? ''
-    const requestedMode = String(request.headers['x-deepseek-boost-mode'] ?? '').toLowerCase()
-    const selectedMode = requestedMode === 'bypass' || requestedMode === 'anchor'
-      ? requestedMode
-      : config.defaultMode
-
-    if (!config.gatewayApiKey) {
-      const message = 'GATEWAY_UPSTREAM_API_KEY is required. Caller credentials are intentionally ignored.'
+    const parsedPayload = maybeParseJson(requestText)
+    const requestedModel = officialModelFromPayload(parsedPayload)
+    const isChatCompletions = /\/chat\/completions\/?$/i.test(localPath)
+    const multiModel = isMultiModelListener(config)
+    const allowed = [...config.allowedModels]
+    const rejectLocal = async (status, type, message, extra = {}) => {
       const failureExchange = {
         schemaVersion: 1,
         requestId,
         startedAt: new Date(startedAt).toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
-        mode: selectedMode,
+        mode: extra.mode ?? null,
         request: {
           method: request.method,
           path: redactUrl(request.url ?? '/'),
-          credentialSource,
+          credentialSource: extra.credentialSource ?? 'none',
           bytes: requestBody.length,
           summary: summarizeRequest(requestText, 'request_history'),
+          ...(Array.isArray(parsedPayload?.messages)
+            ? { rawMessages: capRawMessages(parsedPayload.messages) }
+            : {}),
         },
         transformation: null,
-        response: {
-          status: 503,
-          error: message,
-          errorType: 'gateway_upstream_api_key_not_configured',
-        },
+        response: { status, error: message, errorType: type },
       }
       addDiagnostic(failureExchange)
       try {
         await recordExchange(config, failureExchange)
       } catch {
-        // The deterministic local configuration error still reaches the client.
+        // The deterministic local error still reaches the client.
       }
       response.setHeader('x-gateway-request-id', requestId)
-      sendJson(response, 503, {
+      sendJson(response, status, {
         error: {
           message,
-          type: 'gateway_upstream_api_key_not_configured',
+          type,
           request_id: requestId,
+          ...extra.errorExtra,
         },
       })
+    }
+
+    let planeSnapshot = null
+    if (requestedModel !== undefined && OFFICIAL_MODELS.has(requestedModel)) {
+      if (config.allowedModels.size > 0 && !config.allowedModels.has(requestedModel)) {
+        await rejectLocal(
+          400,
+          'gateway_model_not_allowed',
+          `Model ${JSON.stringify(requestedModel)} is not served by Gateway profile ${config.profileName}. Allowed models: ${allowed.join(', ')}.`,
+          { errorExtra: { profile: config.profileName, allowed_models: allowed } },
+        )
+        return
+      }
+      planeSnapshot = takePlaneSnapshot(config, requestedModel)
+    } else if (requestedModel !== undefined) {
+      if (multiModel || config.allowedModels.size > 0) {
+        await rejectLocal(
+          400,
+          'gateway_model_not_allowed',
+          `Model ${JSON.stringify(requestedModel)} is not served by Gateway profile ${config.profileName}. Allowed models: ${allowed.join(', ') || '(none)'}.`,
+          { errorExtra: { profile: config.profileName, allowed_models: allowed } },
+        )
+        return
+      }
+      planeSnapshot = takePlaneSnapshot(config, requestedModel)
+    } else if (!multiModel) {
+      const onlyModel = config.modelPlanes.size === 1
+        ? [...config.modelPlanes.keys()][0]
+        : config.fallbackPlane?.model
+      planeSnapshot = takePlaneSnapshot(config, onlyModel)
+    } else {
+      await rejectLocal(
+        400,
+        'gateway_model_required',
+        'This multi-model listener requires a top-level official model to select a routing plane.',
+      )
       return
     }
 
-    const isChatCompletions = /\/chat\/completions\/?$/i.test(upstreamUrl.pathname)
+    if (!planeSnapshot) {
+      await rejectLocal(
+        400,
+        'gateway_model_not_allowed',
+        `Model ${JSON.stringify(requestedModel)} is not served by Gateway profile ${config.profileName}.`,
+        { errorExtra: { profile: config.profileName, allowed_models: allowed } },
+      )
+      return
+    }
+
+    if (planeSnapshot.enabled === false) {
+      await rejectLocal(
+        400,
+        'gateway_model_not_allowed',
+        `Model ${JSON.stringify(planeSnapshot.model)} is not enabled on Gateway profile ${planeSnapshot.name || config.profileName}.`,
+        { errorExtra: { profile: planeSnapshot.name || config.profileName, allowed_models: allowed } },
+      )
+      return
+    }
+
+    const requestedMode = String(request.headers['x-deepseek-boost-mode'] ?? '').toLowerCase()
+    const selectedMode = requestedMode === 'bypass' || requestedMode === 'anchor'
+      ? requestedMode
+      : planeSnapshot.defaultMode
+    const upstreamUrl = buildUpstreamUrl(planeSnapshot.upstreamBaseUrl, request.url ?? '/')
+    const { headers, credentialSource } = buildUpstreamHeaders(
+      request.headers,
+      planeSnapshot.gatewayApiKey,
+    )
+    const requestContentType = headers.get('content-type') ?? ''
+
+    if (!planeSnapshot.gatewayApiKey) {
+      await rejectLocal(
+        503,
+        'gateway_upstream_api_key_not_configured',
+        'This model has no configured upstream API key. Caller credentials are intentionally ignored.',
+        { mode: selectedMode, credentialSource },
+      )
+      return
+    }
+
     let appliedMode = selectedMode
     let upstreamBody = requestBody
     let anchorMetrics = null
-    let parsedChatRequest = null
+    let parsedChatRequest = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
+      ? parsedPayload
+      : null
 
     if (isChatCompletions) {
       try {
-        parsedChatRequest = JSON.parse(requestText)
-      } catch {
-        // Anchor mode reports malformed JSON through its existing error path.
-      }
-      const requestedModel = parsedChatRequest?.model
-      if (
-        config.allowedModels.size > 0 &&
-        !config.allowedModels.has(requestedModel)
-      ) {
-        const allowed = [...config.allowedModels]
-        const message = `Model ${JSON.stringify(requestedModel)} is not served by Gateway profile ${config.profileName}. Allowed models: ${allowed.join(', ')}.`
-        const failureExchange = {
-          schemaVersion: 1,
-          requestId,
-          startedAt: new Date(startedAt).toISOString(),
-          completedAt: new Date().toISOString(),
-          durationMs: Date.now() - startedAt,
-          mode: selectedMode,
-          request: {
-            method: request.method,
-            path: redactUrl(request.url ?? '/'),
-            credentialSource,
-            bytes: requestBody.length,
-            summary: summarizeRequest(requestText, 'request_history'),
-          },
-          transformation: null,
-          response: {
-            status: 400,
-            error: message,
-            errorType: 'gateway_model_not_allowed',
-          },
-        }
-        addDiagnostic(failureExchange)
-        try {
-          await recordExchange(config, failureExchange)
-        } catch {
-          // The deterministic profile isolation error still reaches the client.
-        }
-        response.setHeader('x-gateway-request-id', requestId)
-        sendJson(response, 400, {
-          error: {
-            message,
-            type: 'gateway_model_not_allowed',
-            request_id: requestId,
-            profile: config.profileName,
-            allowed_models: allowed,
-          },
-        })
-        return
-      }
-    }
-
-    if (selectedMode === 'anchor' && isChatCompletions) {
-      try {
         const parsedRequest = parsedChatRequest ?? JSON.parse(requestText)
-        const selectedAnchor = config.anchors.get(parsedRequest.model)
-        if (!selectedAnchor) {
-          const configuredModels = [...config.anchors.keys()].join(', ') || '(none)'
+        parsedChatRequest = parsedRequest
+        const selectedAnchor = planeSnapshot.anchors.get(parsedRequest.model)
+        if (selectedMode === 'anchor' && !selectedAnchor) {
+          const configuredModels = [...planeSnapshot.anchors.keys()].join(', ') || '(none)'
           const error = new Error(
             `No Anchor is configured for model ${JSON.stringify(parsedRequest.model)}. Configured models: ${configuredModels}.`,
           )
           error.type = 'gateway_anchor_not_configured'
           throw error
         }
-        const transformed = applyAnchorToChatRequest(
-          parsedRequest,
-          selectedAnchor,
-        )
+        const transformed = transformChatCompletionsRequest(parsedRequest, {
+          mode: selectedMode,
+          microAnchor: planeSnapshot.microAnchors.get(parsedRequest.model) ?? { enabled: false },
+          anchor: selectedMode === 'anchor' ? selectedAnchor : null,
+        })
         upstreamBody = Buffer.from(JSON.stringify(transformed.payload), 'utf8')
         anchorMetrics = transformed.metrics
       } catch (error) {
-        const errorType = error?.type ?? 'gateway_anchor_error'
-        const message = error?.message ?? String(error)
-        const failureExchange = {
-          schemaVersion: 1,
-          requestId,
-          startedAt: new Date(startedAt).toISOString(),
-          completedAt: new Date().toISOString(),
-          durationMs: Date.now() - startedAt,
-          mode: selectedMode,
-          request: {
-            method: request.method,
-            path: redactUrl(request.url ?? '/'),
-            credentialSource,
-            bytes: requestBody.length,
-            summary: summarizeRequest(requestText, 'request_history'),
-          },
-          transformation: null,
-          response: { status: 400, error: message, errorType },
+        if (error instanceof SyntaxError && !parsedChatRequest && selectedMode !== 'anchor') {
+          // Malformed JSON in bypass still forwards the original body.
+        } else {
+          const errorType = error?.type ?? 'gateway_anchor_error'
+          const message = error?.message ?? String(error)
+          await rejectLocal(400, errorType, message, { mode: selectedMode, credentialSource })
+          return
         }
-        addDiagnostic(failureExchange)
-        try {
-          await recordExchange(config, failureExchange)
-        } catch {
-          // The client still receives the deterministic transformation error.
-        }
-        response.statusCode = 400
-        response.setHeader('content-type', 'application/json; charset=utf-8')
-        response.end(JSON.stringify({
-          error: {
-            message,
-            type: errorType,
-            request_id: requestId,
-          },
-        }))
-        return
       }
     } else if (selectedMode === 'anchor') {
       appliedMode = 'bypass-unsupported-path'
@@ -1106,6 +1586,23 @@ export function createGatewayServer(options = {}) {
   })
 
   server.gatewayConfig = publicConfig(config)
+  server.replacePlane = (nextPlane) => {
+    const normalized = normalizePlane(nextPlane)
+    if (!normalized.model) throw new Error('replacePlane requires a model.')
+    if (
+      normalized.enabled &&
+      normalized.defaultMode === 'anchor' &&
+      !normalized.anchors.get(normalized.model)
+    ) {
+      throw new Error(
+        `Gateway plane ${normalized.name || normalized.model} is in anchor mode but has no loaded Anchor.`,
+      )
+    }
+    config.modelPlanes.set(normalized.model, normalized)
+    config.fallbackPlane = null
+    server.gatewayConfig = publicConfig(config)
+    return publicPlaneView(normalized)
+  }
   server.gatewayDiagnostics = (limit = config.diagnosticHistoryLimit) => {
     const normalizedLimit = Math.min(
       Math.max(Number(limit) || 1, 1),

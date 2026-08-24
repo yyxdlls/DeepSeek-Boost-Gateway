@@ -1,24 +1,56 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, unlink } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { loadAnchorArtifact } from './anchor.mjs'
+import { classifyAnchorArtifact } from './anchor-manifest.mjs'
+import { summarizeMessageTrajectory } from './trajectory-stats.mjs'
 
 export const DEFAULT_ANCHOR_DIRECTORY = resolve('anchors')
 
-function anchorReadError(statusCode, message) {
+function anchorReadError(statusCode, message, type = null) {
   const error = new Error(message)
   error.statusCode = statusCode
+  if (type) error.type = type
   return error
 }
-
-const BUNDLED_DEFAULT_FILES = new Set([
-  'dsh-minimal-open-workstream-pro.json',
-])
 
 function portablePath(path) {
   return path.split(sep).join('/')
 }
 
-export async function listAnchorArtifacts(directory = DEFAULT_ANCHOR_DIRECTORY) {
+// Job activation writes resolve()'d absolute paths; the catalog and WebUI
+// speak cwd-relative `anchors/....json`. Collapse anything under cwd so a
+// Windows absolute binding still selects the same catalog card.
+export function toCatalogAnchorPath(value, cwd = process.cwd()) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+  const slash = raw.replaceAll('\\', '/')
+  const absolute = resolve(cwd, slash)
+  const rel = relative(cwd, absolute)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return slash
+  return portablePath(rel)
+}
+
+function catalogEntry(absolutePath, loaded, classification) {
+  return {
+    id: loaded.id,
+    path: portablePath(relative(process.cwd(), absolutePath)),
+    model: loaded.artifact.source?.model ?? null,
+    createdAt: loaded.artifact.createdAt ?? null,
+    fingerprint: loaded.fingerprint,
+    immutable: true,
+    bundledDefault: classification.bundledDefault,
+    copiedBaseline: false,
+    derivedFrom: loaded.artifact.source?.derivedFrom ?? null,
+    category: classification.category,
+    displayName: classification.displayName,
+    selectable: classification.selectable,
+    productVisible: classification.productVisible,
+  }
+}
+
+export async function scanAnchorArtifacts(options = {}) {
+  const directory = options.directory ?? DEFAULT_ANCHOR_DIRECTORY
+  const includeControls = options.includeControls === true
   const absoluteDirectory = resolve(directory)
   const entries = await readdir(absoluteDirectory, { withFileTypes: true })
   const artifacts = []
@@ -28,20 +60,10 @@ export async function listAnchorArtifacts(directory = DEFAULT_ANCHOR_DIRECTORY) 
     const absolutePath = resolve(absoluteDirectory, entry.name)
     try {
       const loaded = await loadAnchorArtifact(absolutePath)
-      // Copied baselines were useful as an experiment, but must not appear as
-      // selectable model-native Anchors in production configuration.
-      if (loaded.artifact.verification?.copiedBaseline) continue
-      artifacts.push({
-        id: loaded.id,
-        path: portablePath(relative(process.cwd(), absolutePath)),
-        model: loaded.artifact.source?.model ?? null,
-        createdAt: loaded.artifact.createdAt ?? null,
-        fingerprint: loaded.fingerprint,
-        immutable: true,
-        bundledDefault: BUNDLED_DEFAULT_FILES.has(entry.name),
-        copiedBaseline: Boolean(loaded.artifact.verification?.copiedBaseline),
-        derivedFrom: loaded.artifact.source?.derivedFrom ?? null,
-      })
+      const classification = classifyAnchorArtifact(absolutePath, loaded.artifact)
+      if (classification.excluded) continue
+      if (!includeControls && classification.category === 'control') continue
+      artifacts.push(catalogEntry(absolutePath, loaded, classification))
     } catch {
       // Invalid or partial artifacts are not offered as selectable bindings.
     }
@@ -51,6 +73,10 @@ export async function listAnchorArtifacts(directory = DEFAULT_ANCHOR_DIRECTORY) 
     String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')) ||
     left.id.localeCompare(right.id),
   )
+}
+
+export async function listAnchorArtifacts(directory = DEFAULT_ANCHOR_DIRECTORY) {
+  return scanAnchorArtifacts({ directory, includeControls: false })
 }
 
 // Rejects absolute paths, drive letters, UNC prefixes, `..` traversal and
@@ -71,7 +97,12 @@ function normalizeRequestedPath(value) {
   return normalized.replace(/^\.\//, '')
 }
 
-export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_ANCHOR_DIRECTORY) {
+// Shared path/id → catalog entry resolution between the read-only content API
+// and the delete API. Same safety rules for both: relative paths, no `..`,
+// no absolute/UNC/drive-letter forms, and only top-level entries of the
+// anchors directory (subdirectories such as `anchors/legacy/` are never
+// scanned and therefore never resolvable here).
+async function resolveAnchorArtifactEntry(input, directory) {
   const requestedPath = typeof input?.path === 'string' && input.path.trim()
     ? input.path.trim()
     : null
@@ -96,9 +127,8 @@ export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_
     candidateAbsolute = candidate
   }
 
-  // Only artifacts already listed by the catalog are legal; the requested file
-  // must map onto one of them exactly (same portable path or same resolved file).
-  const artifacts = await listAnchorArtifacts(directory)
+  // Content API uses the full legal scan so hidden controls remain readable.
+  const artifacts = await scanAnchorArtifacts({ directory, includeControls: true })
   let entry = null
   if (normalized) {
     entry = artifacts.find((artifact) =>
@@ -121,7 +151,38 @@ export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_
       `Anchor artifact is not in the catalog: ${normalized ?? requestedId}`,
     )
   }
+  return entry
+}
 
+// Mirrors the WebUI `bindingMatchesArtifact` semantics: fingerprint equality
+// (when both sides carry one) wins; otherwise compare normalized paths with
+// the same suffix tolerance for `anchors/...` forms rooted deeper on disk.
+function catalogPath(value) {
+  return String(value ?? '').replaceAll('\\', '/')
+}
+
+export function bindingMatchesArtifact(bound, artifact) {
+  if (!artifact) return false
+  const boundPath = catalogPath(bound?.path)
+  const artifactPath = catalogPath(artifact.path)
+  return Boolean(
+    bound?.fingerprint && artifact.fingerprint && bound.fingerprint === artifact.fingerprint,
+  ) || Boolean(
+    artifactPath && boundPath &&
+    (boundPath === artifactPath || boundPath.endsWith(`/${artifactPath}`) || artifactPath.endsWith(`/${boundPath}`)),
+  )
+}
+
+export function collectAnchorReferences(bindings, artifact) {
+  const profiles = (Array.isArray(bindings) ? bindings : [])
+    .filter((bound) => bindingMatchesArtifact(bound, artifact))
+    .map((bound) => bound?.profile)
+    .filter((profile) => typeof profile === 'string' && profile.length > 0)
+  return [...new Set(profiles)]
+}
+
+export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_ANCHOR_DIRECTORY) {
+  const entry = await resolveAnchorArtifactEntry(input, directory)
   const artifactPath = resolve(entry.path.split('/').join(sep))
   let loaded
   try {
@@ -139,6 +200,7 @@ export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_
     )
   }
   const artifact = loaded.artifact
+  const messages = Array.isArray(artifact.trajectory?.messages) ? artifact.trajectory.messages : []
   return {
     id: artifact.id,
     path: entry.path,
@@ -146,9 +208,15 @@ export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_
     createdAt: artifact.createdAt ?? null,
     fingerprint: loaded.fingerprint,
     bundledDefault: entry.bundledDefault,
+    category: entry.category,
+    displayName: entry.displayName,
+    selectable: entry.selectable,
     continuation: artifact.continuation ?? null,
     requestSettings: artifact.source?.requestSettings ?? null,
-    messages: Array.isArray(artifact.trajectory?.messages) ? artifact.trajectory.messages : [],
+    messages,
+    // Same v3 trajectory summary as request details: reasoning.cot + markers
+    // for the WebUI to reuse renderMarkers / trajectoryLabel.
+    trajectoryStats: summarizeMessageTrajectory(messages, 'anchor_trajectory'),
     assistantTurns: Array.isArray(artifact.trajectory?.assistantTurns)
       ? artifact.trajectory.assistantTurns
       : [],
@@ -157,5 +225,47 @@ export async function readAnchorArtifactContent(input = {}, directory = DEFAULT_
       : [],
     usage: artifact.trajectory?.usage ?? null,
     verification: artifact.verification ?? null,
+  }
+}
+
+export async function deleteUserAnchorArtifact(
+  input = {},
+  directory = DEFAULT_ANCHOR_DIRECTORY,
+  options = {},
+) {
+  const entry = await resolveAnchorArtifactEntry(input, directory)
+  if (entry.category !== 'user' || entry.bundledDefault) {
+    throw anchorReadError(
+      409,
+      'Only user-generated Anchor artifacts can be deleted.',
+      'gateway_anchor_readonly',
+    )
+  }
+  // Reference guard: still bound to a model plane → 409 with the plane names.
+  // Never auto-unbind or fall back to bypass; the user must switch bindings.
+  const referencedBy = collectAnchorReferences(options.bindings, entry)
+  if (referencedBy.length > 0) {
+    const error = anchorReadError(
+      409,
+      `Anchor is referenced by: ${referencedBy.join(', ')}.`,
+      'gateway_anchor_in_use',
+    )
+    error.referencedBy = referencedBy
+    throw error
+  }
+  const artifactPath = resolve(entry.path.split('/').join(sep))
+  try {
+    await unlink(artifactPath)
+  } catch (error) {
+    throw anchorReadError(
+      500,
+      `Failed to delete Anchor artifact: ${error?.message ?? String(error)}`,
+    )
+  }
+  return {
+    id: entry.id,
+    path: entry.path,
+    displayName: entry.displayName,
+    model: entry.model,
   }
 }

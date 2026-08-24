@@ -19,12 +19,12 @@ async function close(server) {
 
 test('loads the frozen anchor only after fingerprint verification', async () => {
   const loaded = await loadAnchorArtifact()
-  assert.equal(loaded.id, 'dsh-minimal-open-workstream-pro')
+  assert.equal(loaded.id, 'deepseek-v4-pro-open-workstream-20260824101411-f2a74161')
   assert.equal(
     loaded.fingerprint,
-    '63f691b0bdfdb5788cdf1bd0ee4f0bc98d0f24c7e09f492cde5eda2a61ed42df',
+    '032864c5f60fe86802f53b4a3ff88c48befccbf385d9e0628920f4f10496b763',
   )
-  assert.equal(loaded.artifact.trajectory.messages.length, 6)
+  assert.equal(loaded.artifact.trajectory.messages.length, 7)
 })
 
 test('prepends the immutable trajectory and keeps only current Harness tools', async () => {
@@ -49,12 +49,9 @@ test('prepends the immutable trajectory and keeps only current Harness tools', a
     transformed.payload.messages.slice(0, anchorLength),
     loaded.artifact.trajectory.messages,
   )
-  assert.equal(
-    transformed.payload.messages[anchorLength].content,
-    loaded.artifact.continuation.message,
-  )
-  assert.match(transformed.payload.messages[anchorLength + 1].content, /You are Kilo\./)
-  assert.deepEqual(transformed.payload.messages[anchorLength + 2], source.messages[1])
+  assert.match(transformed.payload.messages[anchorLength].content, new RegExp(loaded.artifact.continuation.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(transformed.payload.messages[anchorLength].content, /You are Kilo\./)
+  assert.deepEqual(transformed.payload.messages[anchorLength + 1], source.messages[1])
   assert.deepEqual(transformed.payload.tools, currentTools)
   assert.deepEqual(
     transformed.payload.tools.map((tool) => tool.function.name),
@@ -65,6 +62,7 @@ test('prepends the immutable trajectory and keeps only current Harness tools', a
     buildDshMinimalTools().map((tool) => tool.function.name),
   )
   assert.equal(transformed.metrics.anchorMessageCount, anchorLength)
+  assert.ok(Number(transformed.metrics.anchorMessageBytes) > 0)
   assert.equal(transformed.metrics.bootstrapToolsAddedToCurrentRequest, 0)
   assert.equal(transformed.metrics.originalSystemChars, 13)
   assert.equal(transformed.metrics.anchorHistory.scope, 'anchor_history')
@@ -92,7 +90,6 @@ test('uses an artifact-specific active-workstream continuation', async () => {
   const artifact = structuredClone(loaded.artifact)
   delete artifact.artifactFingerprint
   artifact.id = 'open-test'
-  artifact.trajectory.messages = artifact.trajectory.messages.slice(0, 6)
   artifact.continuation = {
     mode: 'same-active-workstream',
     message: 'Continue the same active workstream with the next requirement.',
@@ -106,21 +103,59 @@ test('uses an artifact-specific active-workstream continuation', async () => {
     tools: [{ type: 'function', function: { name: 'read', parameters: {} } }],
   }, artifact)
 
-  assert.equal(transformed.payload.messages[5].role, 'tool')
+  const anchorLength = artifact.trajectory.messages.length
+  assert.equal(artifact.trajectory.messages.at(-1).role, 'assistant')
   assert.equal(
-    transformed.payload.messages[6].content,
-    artifact.continuation.message,
+    transformed.payload.messages[anchorLength].content,
+    `${artifact.continuation.message}\n\nHarness instructions to follow as we continue working:\n\n(none supplied)`,
   )
   assert.match(
-    transformed.payload.messages[7].content,
+    transformed.payload.messages[anchorLength].content,
     /Harness instructions to follow as we continue working/,
   )
   assert.doesNotMatch(
-    transformed.payload.messages[7].content,
+    transformed.payload.messages[anchorLength].content,
     /current task/i,
+  )
+  assert.deepEqual(
+    transformed.payload.messages[anchorLength + 1],
+    { role: 'user', content: 'Next requirement.' },
   )
   assert.equal(transformed.metrics.continuationMode, 'same-active-workstream')
   assert.deepEqual(transformed.payload.tools.map((tool) => tool.function.name), ['read'])
+})
+
+test('v2 artifacts without continuation only build the current Harness bridge', () => {
+  const artifact = {
+    schemaVersion: 2,
+    kind: 'deepseek-v4-anchor-artifact',
+    id: 'v2-empty-continuation',
+    displayName: 'V2 空 continuation',
+    trajectory: {
+      messages: [
+        { role: 'user', content: 'Begin.' },
+        { role: 'assistant', content: 'Ready.', reasoning_content: '' },
+      ],
+    },
+  }
+  delete artifact.artifactFingerprint
+  artifact.artifactFingerprint = createHash('sha256')
+    .update(JSON.stringify(artifact))
+    .digest('hex')
+
+  const transformed = applyAnchorToChatRequest({
+    messages: [{ role: 'user', content: 'Task.' }],
+  }, artifact)
+
+  assert.equal(
+    transformed.payload.messages[2].content,
+    'Current Harness instructions (authoritative for the current task):\n\n(none supplied)',
+  )
+  assert.doesNotMatch(
+    transformed.payload.messages[2].content,
+    new RegExp(ENVIRONMENT_SWITCH_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  )
+  assert.equal(transformed.metrics.environmentSwitchChars, 0)
 })
 
 test('keeps the completed-bootstrap transition for the v1 control artifact', async () => {
@@ -128,9 +163,9 @@ test('keeps the completed-bootstrap transition for the v1 control artifact', asy
   const transformed = applyAnchorToChatRequest({
     messages: [{ role: 'user', content: 'Task.' }],
   }, loaded)
-  assert.equal(
+  assert.match(
     transformed.payload.messages[loaded.artifact.trajectory.messages.length].content,
-    ENVIRONMENT_SWITCH_MESSAGE,
+    new RegExp(ENVIRONMENT_SWITCH_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   )
   assert.equal(transformed.metrics.continuationMode, 'completed-bootstrap')
 })
@@ -168,9 +203,9 @@ test('sends the anchored body to an upstream while preserving current tools', as
     })
     assert.equal(response.status, 200)
     const anchorLength = loaded.artifact.trajectory.messages.length
-    assert.equal(received.messages.length, anchorLength + 3)
+    assert.equal(received.messages.length, anchorLength + 2)
     assert.deepEqual(received.messages.slice(0, anchorLength), loaded.artifact.trajectory.messages)
-    assert.match(received.messages[anchorLength + 1].content, /Harness system\./)
+    assert.match(received.messages[anchorLength].content, /Harness system\./)
     assert.deepEqual(received.tools.map((tool) => tool.function.name), ['read'])
   } finally {
     await close(gateway)

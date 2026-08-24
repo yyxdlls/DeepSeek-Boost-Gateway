@@ -35,6 +35,12 @@ export const MODEL_CATALOG = Object.freeze({
     servedVersion: 'DeepSeek-V4-Flash-0731',
     concurrencyLimit: 2_500,
   }),
+  'deepseek-v4-flash-vision-exp': Object.freeze({
+    ...SHARED_V4_CAPABILITIES,
+    servedVersion: 'deepseek-v4-flash-vision-exp',
+    inputModalities: Object.freeze(['text', 'image']),
+    experimental: true,
+  }),
 })
 
 export const DSH_REPRODUCTION_MAX_TOKENS = 256_000

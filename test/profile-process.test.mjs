@@ -31,7 +31,7 @@ test('runs a data profile in a child process and stops it with the parent handle
     managementToken: '',
     defaultMode: 'anchor',
     anchorPaths: {
-      'deepseek-v4-pro': 'anchors/dsh-minimal-open-workstream-pro.json',
+      'deepseek-v4-pro': 'anchors/deepseek-v4-pro-open-workstream-20260824101411-f2a74161.json',
     },
     logDir,
     diagnosticHistoryLimit: 10,

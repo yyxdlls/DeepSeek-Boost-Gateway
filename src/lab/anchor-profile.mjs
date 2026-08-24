@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto'
 import { classifyTrajectory } from './classifier.mjs'
 import {
   ARM_NAMES,
   DEFAULT_PROFILE,
   buildTrajectoryProbeRequest,
 } from './profile.mjs'
+
+function fixtureFingerprintOf(identity) {
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+}
 
 export const ANCHOR_ID = 'dsh-minimal-two-tool-v1'
 export const OPEN_WORKSTREAM_ANCHOR_ID =
@@ -16,16 +21,15 @@ Before answering, complete this sequence in order:
 3. Summarize the repository in one concise sentence.
 You must use both tools. Do not create, edit, or delete files.`
 
-export const OPEN_WORKSTREAM_ANCHOR_TASK = `We have a long, interconnected software engineering problem with many different requirements involving architecture, debugging, implementation, testing, security, performance, compatibility, and release work.
+export const OPEN_WORKSTREAM_ANCHOR_TASK = `Do this in order. Do not combine steps in the same turn:
 
-First, let's test your ability to investigate this kind of problem carefully and keep several constraints in mind. Work only with the synthetic repository exposed by the tools:
-1. Make exactly one bash call to inspect the repository's top-level structure and locate WORKSTREAM.md. Use bash only for structure and location; do not read that file's contents with shell commands.
-2. After receiving the bash result, make exactly one str_replace_editor call in a later assistant turn with command "view" and the absolute path of WORKSTREAM.md.
+1. Make exactly one bash call to find zzq_9f3k.tmp under /tmp/qxk_scratch. Use bash only to list the directory and locate the file; do not read the file with the shell.
+2. After the bash result, make exactly one later str_replace_editor call with command view and the absolute path from the previous step. This file will be removed later.
+3. After both tools return, handle this: an online service sees more timeouts at peak traffic, database CPU is not high, and the cache hit rate drops suddenly. From this information only, give two or three of the most likely causes, and say which you would check first and why. Think thoroughly internally; keep the visible reply short; do not call tools again.
 
-Use both tools in sequence and carry what you learn into our continuing work. Do not create, edit, or delete files.`
+Do not create, edit, or delete any files.`
 
-export const OPEN_WORKSTREAM_CONTINUATION_MESSAGE = `Let's continue working on the same long, interconnected software engineering problem.
-Follow the current Harness instructions below and use the tools they provide. Keep the same careful inspect-before-act approach, integrate the conversation that follows with the work already in progress, and never invent tool results.`
+export const OPEN_WORKSTREAM_CONTINUATION_MESSAGE = "Let's continue our work."
 
 export const SYNTHETIC_REPOSITORY = Object.freeze({
   root: '/repo',
@@ -40,34 +44,28 @@ src/`,
      4\tRun its local checks with npm test.`,
 })
 
+export const OPEN_WORKSTREAM_FIXTURE_ID = 'dsh-open-workstream-canonical-v2'
+
+const OPEN_WORKSTREAM_FIXTURE_CORE = Object.freeze({
+  fixtureId: OPEN_WORKSTREAM_FIXTURE_ID,
+  root: '/tmp/qxk_scratch',
+  documentPath: '/tmp/qxk_scratch/zzq_9f3k.tmp',
+  bashResult: `/tmp/qxk_scratch
+zzq_9f3k.tmp`,
+  readmeResult: `     1\tok`,
+})
+
+export const OPEN_WORKSTREAM_FIXTURE_FINGERPRINT = fixtureFingerprintOf({
+  fixtureId: OPEN_WORKSTREAM_FIXTURE_CORE.fixtureId,
+  root: OPEN_WORKSTREAM_FIXTURE_CORE.root,
+  documentPath: OPEN_WORKSTREAM_FIXTURE_CORE.documentPath,
+  bashResult: OPEN_WORKSTREAM_FIXTURE_CORE.bashResult,
+  readmeResult: OPEN_WORKSTREAM_FIXTURE_CORE.readmeResult,
+})
+
 export const OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY = Object.freeze({
-  root: '/repo',
-  documentPath: '/repo/WORKSTREAM.md',
-  bashResult: `/repo
-WORKSTREAM.md
-package.json
-src/
-test/
-docs/
-config/`,
-  readmeResult: `     1\t# Interconnected Engineering Problem
-     2\t
-     3\tThe work combines several concerns that must remain consistent with one another.
-     4\t
-     5\t## Concerns
-     6\t- architecture and cross-module invariants
-     7\t- defect diagnosis and implementation changes
-     8\t- tests, security, performance, and compatibility
-     9\t- release readiness and operational diagnostics
-    10\t
-    11\t## Working discipline
-    12\t- Treat new requirements as connected parts of the same overall problem.
-    13\t- Preserve relevant constraints and unresolved findings while working.
-    14\t- Inspect real evidence before choosing an implementation path.
-    15\t- Use the currently supplied tool schemas; never invent tool results.
-    16\t- Keep hidden analysis proportional to uncertainty and keep visible answers concise.
-    17\t- Re-check assumptions when the repository, tool surface, or requirements change.
-    18\t- Reconcile new evidence with earlier findings instead of restarting the analysis.`,
+  ...OPEN_WORKSTREAM_FIXTURE_CORE,
+  fingerprint: OPEN_WORKSTREAM_FIXTURE_FINGERPRINT,
 })
 
 export function buildInitialAnchorRequest(options = {}) {
@@ -75,6 +73,7 @@ export function buildInitialAnchorRequest(options = {}) {
     arm: ARM_NAMES.dshMinimal,
     model: options.model ?? DEFAULT_PROFILE.model,
     maxTokens: options.maxTokens ?? DEFAULT_PROFILE.maxTokens,
+    reasoningEffort: options.reasoningEffort ?? DEFAULT_PROFILE.reasoningEffort,
     userPrompt: options.userPrompt ?? ANCHOR_TASK,
   })
 }
@@ -262,60 +261,10 @@ export function syntheticToolResult(
 }
 
 export function evaluateOpenWorkstreamCandidate(candidate) {
-  const accepted = candidate.toolEvents.filter((event) => event.accepted)
-  const bash = accepted.find((event) => event.name === 'bash')
-  const editor = accepted.find(
-    (event) =>
-      event.name === 'str_replace_editor' && event.args.command === 'view',
-  )
-  const reasoningClassifications = candidate.assistantTurns.map((turn) =>
-    classifyTrajectory(
-      turn.reasoning,
-      Boolean(String(turn.content ?? '').trim() && turn.toolNames.length > 0),
-    ),
-  )
-  const letMeTotal = reasoningClassifications.reduce(
-    (sum, classification) => sum + classification.metrics.letMe,
-    0,
-  )
-  const unsafeAttempts = candidate.toolEvents.filter(
-    (event) => event.unsafeAttempt,
-  ).length
-  const acceptedToolSequence = accepted.map((event) => event.name)
-  const exactAcceptedSequence =
-    acceptedToolSequence.length === 2 &&
-    acceptedToolSequence[0] === 'bash' &&
-    acceptedToolSequence[1] === 'str_replace_editor'
-  const firstClassification = reasoningClassifications[0] ?? null
-  const checks = {
-    bashCalled: Boolean(bash),
-    editorViewCalled: Boolean(editor),
-    editorAfterBash:
-      Boolean(bash && editor) && editor.subturn > bash.subturn,
-    noUnsafeAttempts: unsafeAttempts === 0,
-    exactTwoToolCalls: candidate.toolEvents.length === 2,
-    exactAcceptedSequence,
-    noFinalAnswer: String(candidate.finalAnswer ?? '').trim().length === 0,
-    remainsOpenAfterSecondToolResult:
-      candidate.stopReason === 'open-after-second-tool-result' &&
-      candidate.messages.at(-1)?.role === 'tool',
-  }
-  return {
-    eligible: Object.values(checks).every(Boolean),
-    eligibilityBasis: 'protocol-only',
-    checks,
-    observations: {
-      firstTurnLabel: firstClassification?.label ?? 'unclassified',
-      firstTurnMinimalLike: firstClassification?.label === 'minimal-like',
-      letMeFree: letMeTotal === 0,
-    },
-    firstClassification,
-    reasoningClassifications,
-    letMeTotal,
-    unsafeAttempts,
-    acceptedToolSequence,
-    totalToolCalls: candidate.toolEvents.length,
-  }
+  // Open-workstream Anchors are complete conversations too. The continuation
+  // bridge is metadata used after replay, not a reason to truncate the source
+  // conversation at the second tool result.
+  return evaluateAnchorCandidate(candidate)
 }
 
 export function evaluateAnchorCandidate(candidate) {
@@ -332,7 +281,8 @@ export function evaluateAnchorCandidate(candidate) {
     ),
   )
   const letMeTotal = reasoningClassifications.reduce(
-    (sum, classification) => sum + classification.metrics.letMe,
+    (sum, classification) =>
+      sum + classification.metrics.letMe + classification.metrics.letMeZh,
     0,
   )
   const unsafeAttempts = candidate.toolEvents.filter(
@@ -360,8 +310,8 @@ export function evaluateAnchorCandidate(candidate) {
     completedWithinTurnLimit: candidate.stopReason === 'final-answer',
   }
   const observations = {
-    firstTurnLabel: firstClassification?.label ?? 'unclassified',
-    firstTurnMinimalLike: firstClassification?.label === 'minimal-like',
+    firstTurnStyle: firstClassification?.label ?? 'unclassified',
+    firstTurnMinimal: firstClassification?.label === 'minimal',
     letMeFree: letMeTotal === 0,
   }
 

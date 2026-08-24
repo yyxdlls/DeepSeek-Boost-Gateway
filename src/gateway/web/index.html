@@ -45,7 +45,7 @@
       </section>
 
       <section class="metric-grid" aria-label="Gateway 概览">
-        <article class="metric-card accent-cyan">
+        <article class="metric-card accent-cyan metric-mode-card">
           <span class="metric-label">运行模式</span>
           <strong id="metric-mode" class="text-value">—</strong>
           <small id="metric-mode-note">等待 Gateway</small>
@@ -66,7 +66,7 @@
           <small id="metric-complete-note">当前可见请求</small>
         </article>
         <article class="metric-card accent-cyan">
-          <span class="metric-label">已保存推理总长</span>
+          <span class="metric-label">已保存推理 tokens</span>
           <strong id="metric-reasoning">—</strong>
           <small id="metric-reasoning-note">仅当前回复，不含 Anchor</small>
         </article>
@@ -110,6 +110,14 @@
                 <option value="error">错误</option>
               </select>
             </label>
+            <label>
+              <span class="sr-only">按输入类型筛选</span>
+              <select id="input-filter">
+                <option value="all">全部输入</option>
+                <option value="tool-only">纯工具调用</option>
+                <option value="not-tool-only">非纯工具调用</option>
+              </select>
+            </label>
           </div>
 
           <div class="table-wrap">
@@ -150,10 +158,9 @@
           <details class="anchor-builder">
             <summary>创建模型专属 Anchor</summary>
             <form id="anchor-form" class="anchor-form">
-              <label><span>目标配置</span><select id="anchor-profile" required></select></label>
-              <label class="wide"><span>锚定提示词</span><textarea id="anchor-prompt" minlength="20" maxlength="8000" rows="7" required placeholder="输入希望模型自然进入的工作状态和需要使用工具完成的任务。生成器不会追加关键字引导，由你根据自然输出挑选候选。"></textarea></label>
-              <label class="wide"><span>续接指令（continuation）</span><textarea id="anchor-continuation" minlength="1" maxlength="4000" rows="4" required>Let's continue working on the same long, interconnected software engineering problem.
-Follow the current Harness instructions below and use the tools they provide. Keep the same careful inspect-before-act approach, integrate the conversation that follows with the work already in progress, and never invent tool results.</textarea></label>
+              <label class="target-config-label"><span>目标配置<button id="anchor-example" class="button ghost anchor-example-button" type="button" disabled>尚无模型原生示例</button></span><select id="anchor-profile" required></select></label>
+              <label class="wide"><span>锚定提示词<button type="button" class="help-icon" aria-label="帮助说明" aria-describedby="help-anchor-prompt"><span aria-hidden="true">?</span><span class="help-tooltip" role="tooltip" id="help-anchor-prompt">用于让目标模型在固定合成仓库中实际完成一次工具轨迹；通常填写希望模型完成的探测任务，例如“依次查看仓库结构和 WORKSTREAM.md，再给出简短收尾”。</span></button></span><textarea id="anchor-prompt" minlength="20" maxlength="8000" rows="7" required placeholder="输入希望模型自然进入的工作状态和需要使用工具完成的任务。生成器不会追加关键字引导，由你根据自然输出挑选候选。"></textarea></label>
+              <label class="wide"><span>续接指令（continuation）<button type="button" class="help-icon" aria-label="帮助说明" aria-describedby="help-anchor-continuation"><span aria-hidden="true">?</span><span class="help-tooltip" role="tooltip" id="help-anchor-continuation">Anchor 与当前 Harness 之间的可选桥接文本，会随 Artifact 保存并原样注入；通常填写中性的工作流延续句，也可留空。</span></button></span><textarea id="anchor-continuation" maxlength="4000" rows="4">Let's continue working on the same long, interconnected software engineering problem.</textarea></label>
               <label><span>候选数</span><input id="anchor-runs" type="number" min="1" max="10" value="3" required></label>
               <label><span>思考强度</span><select id="anchor-reasoning-effort"><option value="max" selected>最高（max）</option><option value="high">高（high）</option><option value="low">低（low）</option></select></label>
               <label><span>每候选最多轮数</span><input id="anchor-subturns" type="number" min="3" max="12" value="6" required></label>
@@ -180,6 +187,24 @@ Follow the current Harness instructions below and use the tools they provide. Ke
         </article>
       </section>
 
+      <section class="panel micro-anchor-panel" aria-labelledby="micro-anchor-title">
+        <div class="panel-heading compact">
+          <div>
+            <p class="section-kicker">PER-TURN STEERING</p>
+            <h2 id="micro-anchor-title">微锚点管理</h2>
+          </div>
+          <button id="micro-anchor-create" class="button primary" type="button">新建微锚点</button>
+        </div>
+        <p id="micro-anchor-warning" class="micro-anchor-warning" role="note"></p>
+        <p id="micro-anchor-apply-note" class="micro-anchor-apply-note" hidden></p>
+        <div id="micro-anchor-definitions" class="micro-anchor-definitions">
+          <p class="muted">等待 Gateway 返回微锚点定义</p>
+        </div>
+        <div id="micro-anchor-profiles" class="micro-anchor-profiles">
+          <p class="muted">等待 Gateway 返回模型配置</p>
+        </div>
+      </section>
+
       <section class="panel profiles-panel">
         <div class="panel-heading compact">
           <div>
@@ -189,8 +214,8 @@ Follow the current Harness instructions below and use the tools they provide. Ke
           <span class="live-badge">保存后热应用</span>
         </div>
         <form id="deployment-form" class="deployment-form">
-          <label><span>数据端口方式</span><select id="deployment-mode"><option value="split">多端口 · 每端口一个模型</option><option value="single">单数据端口 · 多模型</option><option value="all">全部开启</option></select></label>
-          <label><span>“全部开启”的合并数据端口</span><input id="deployment-combined-port" type="number" min="1" max="65535" value="8646" required></label>
+          <label><span>数据端口方式</span><select id="deployment-mode"><option value="split">三端口 · 每端口一个模型</option><option value="single">一个多模型路由口 · 按 request.model 路由</option><option value="all">多模型路由口 + 三个单模型口</option></select></label>
+          <label><span>多模型路由端口</span><input id="deployment-combined-port" type="number" min="1" max="65535" value="8646" required></label>
           <button class="button secondary" type="submit">保存部署方式</button>
           <p id="deployment-note" class="form-note">拓扑变更需要重启 Gateway；当前进程不会立即改绑端口。</p>
         </form>
@@ -236,6 +261,11 @@ Follow the current Harness instructions below and use the tools they provide. Ke
         <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="candidate-dialog-close">×</button>
       </div>
       <p class="candidate-dialog-note">以下为该候选的完整生成对话，包含提示词、推理原文、工具调用与工具结果；仅在本机管理界面展示。</p>
+      <div class="role-legend" aria-label="对话角色说明">
+        <span class="role-legend-item"><i class="legend-dot legend-user" aria-hidden="true"></i>用户 / 引导请求（<code>user</code>）</span>
+        <span class="role-legend-item"><i class="legend-dot legend-assistant" aria-hidden="true"></i>模型消息（<code>assistant</code>）：思维链 / 正文 / 工具调用</span>
+        <span class="role-legend-item"><i class="legend-dot legend-tool" aria-hidden="true"></i>工具结果（<code>tool</code>）：仅对应调用结果，不代表本轮最终回复</span>
+      </div>
       <div id="candidate-dialog-body" class="candidate-dialog-body">
         <p class="muted">等待加载</p>
       </div>
@@ -262,6 +292,11 @@ Follow the current Harness instructions below and use the tools they provide. Ke
         <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="messages-dialog-close">×</button>
       </div>
       <p class="candidate-dialog-note">只展示本次新增输入与本次新回复；内容在本机诊断中保存，截断处会标注。</p>
+      <div class="role-legend" aria-label="对话角色说明">
+        <span class="role-legend-item"><i class="legend-dot legend-user" aria-hidden="true"></i>用户 / 引导请求（<code>user</code>）</span>
+        <span class="role-legend-item"><i class="legend-dot legend-assistant" aria-hidden="true"></i>模型消息（<code>assistant</code>）：思维链 / 正文 / 工具调用</span>
+        <span class="role-legend-item"><i class="legend-dot legend-tool" aria-hidden="true"></i>工具结果（<code>tool</code>）：仅对应调用结果，不代表本轮最终回复</span>
+      </div>
       <div id="messages-dialog-body" class="candidate-dialog-body">
         <p class="muted">等待加载</p>
       </div>
@@ -276,7 +311,74 @@ Follow the current Harness instructions below and use the tools they provide. Ke
         <button class="dialog-close" value="cancel" aria-label="关闭" type="button" id="anchor-dialog-close">×</button>
       </div>
       <p class="candidate-dialog-note">以下内容只读，不提供编辑、删除或覆盖入口。完整消息按 Artifact 原样展示，包括以工具结果收尾的旧格式 Anchor。</p>
+      <div class="role-legend" aria-label="对话角色说明">
+        <span class="role-legend-item"><i class="legend-dot legend-user" aria-hidden="true"></i>用户 / 引导请求（<code>user</code>）</span>
+        <span class="role-legend-item"><i class="legend-dot legend-assistant" aria-hidden="true"></i>模型消息（<code>assistant</code>）：思维链 / 正文 / 工具调用</span>
+        <span class="role-legend-item"><i class="legend-dot legend-tool" aria-hidden="true"></i>工具结果（<code>tool</code>）：仅对应调用结果，不代表本轮最终回复</span>
+      </div>
       <div id="anchor-dialog-body" class="candidate-dialog-body anchor-dialog-body">
+        <p class="muted">等待加载</p>
+      </div>
+    </dialog>
+
+    <dialog id="select-dialog" class="select-dialog">
+      <form id="select-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="section-kicker">选用并保存</p>
+            <h2>保存所选候选</h2>
+          </div>
+          <button class="dialog-close" aria-label="关闭" type="button" id="select-dialog-close">×</button>
+        </div>
+        <p id="select-dialog-note" class="select-note">正在为候选合成机器 id/path…</p>
+        <p class="select-hint">名称仅用于识别，机器 id/path 由服务端生成，保存后不可原地重命名。</p>
+        <label class="token-field">
+          <span>名称（1–80 字符）</span>
+          <input id="select-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="例如：DeepSeek V4 Pro 默认 Anchor">
+        </label>
+        <p id="select-error" class="candidate-warning select-error" hidden></p>
+        <div class="dialog-actions">
+          <button class="button ghost" type="button" id="select-cancel">取消</button>
+          <button class="button primary" type="submit" id="select-submit">保存并绑定</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="micro-anchor-dialog" class="micro-anchor-dialog">
+      <form id="micro-anchor-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="section-kicker">微锚点编辑</p>
+            <h2 id="micro-anchor-dialog-title">新建微锚点</h2>
+          </div>
+          <button class="dialog-close" type="button" id="micro-anchor-dialog-close" aria-label="关闭">×</button>
+        </div>
+        <p id="micro-anchor-dialog-note" class="micro-anchor-dialog-note"></p>
+        <label class="token-field">
+          <span>名称（1–80 字符）</span>
+          <input id="micro-anchor-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="例如：故障排查">
+        </label>
+        <label id="micro-anchor-content-field" class="micro-anchor-content-field">
+          <span>正文（最多 4000 字符）</span>
+          <textarea id="micro-anchor-content" maxlength="4000" rows="8" spellcheck="false"></textarea>
+        </label>
+        <p id="micro-anchor-dialog-error" class="candidate-warning" hidden></p>
+        <div class="dialog-actions">
+          <button class="button ghost" type="button" id="micro-anchor-dialog-cancel">取消</button>
+          <button class="button primary" type="submit" id="micro-anchor-dialog-submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="micro-anchor-view-dialog" class="micro-anchor-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="section-kicker">微锚点只读查看</p>
+          <h2 id="micro-anchor-view-title">微锚点</h2>
+        </div>
+        <button class="dialog-close" type="button" id="micro-anchor-view-close" aria-label="关闭">×</button>
+      </div>
+      <div id="micro-anchor-view-body">
         <p class="muted">等待加载</p>
       </div>
     </dialog>

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
+import { handleAnchorJobRoutes } from './management-routes.mjs'
 import { COT_MARKER_PROFILE } from './trajectory-stats.mjs'
 import { serveWebUiRequest } from './web-ui.mjs'
 
@@ -87,7 +88,12 @@ export function createGatewayManagementServer(options = {}) {
     anchorJobs: options.anchorJobs ?? null,
     listAnchors: options.listAnchors ?? null,
     readAnchorContent: options.readAnchorContent ?? null,
+    deleteAnchor: options.deleteAnchor ?? null,
     clearDiagnostics: options.clearDiagnostics ?? null,
+    listMicroAnchors: options.listMicroAnchors ?? null,
+    createMicroAnchor: options.createMicroAnchor ?? null,
+    updateMicroAnchor: options.updateMicroAnchor ?? null,
+    deleteMicroAnchor: options.deleteMicroAnchor ?? null,
   }
   if (!isLoopbackHost(config.host) && !config.managementToken) {
     throw new Error('A non-loopback Gateway management host requires a managementToken.')
@@ -254,6 +260,83 @@ export function createGatewayManagementServer(options = {}) {
       return
     }
 
+    if (request.method === 'GET' && localUrl.pathname === '/__gateway/micro-anchors') {
+      try {
+        sendJson(response, 200, {
+          schemaVersion: 2,
+          microAnchors: config.listMicroAnchors ? await config.listMicroAnchors() : { definitions: [], profiles: {} },
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_view_failed',
+            message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
+    if (request.method === 'POST' && localUrl.pathname === '/__gateway/micro-anchors') {
+      if (!config.createMicroAnchor) {
+        sendJson(response, 501, { error: { type: 'gateway_micro_anchor_unavailable' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Micro-anchor writes require a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        sendJson(response, 200, await config.createMicroAnchor(await readJson(request)))
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_create_failed',
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
+          },
+        })
+      }
+      return
+    }
+
+    const microAnchorMatch = localUrl.pathname.match(/^\/__gateway\/micro-anchors\/([^/]+)$/)
+    if (microAnchorMatch && ['PATCH', 'DELETE'].includes(request.method)) {
+      const handler = request.method === 'PATCH' ? config.updateMicroAnchor : config.deleteMicroAnchor
+      if (!handler) {
+        sendJson(response, 501, { error: { type: 'gateway_micro_anchor_unavailable' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Micro-anchor writes require a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        const id = decodeURIComponent(microAnchorMatch[1])
+        const payload = await readJson(request)
+        sendJson(response, 200, request.method === 'PATCH' ? await handler(id, payload) : await handler(id))
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: {
+            type: error?.type ?? 'gateway_micro_anchor_update_failed',
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
+          },
+        })
+      }
+      return
+    }
+
     if (request.method === 'GET' && localUrl.pathname === '/__gateway/anchors') {
       try {
         sendJson(response, 200, {
@@ -265,6 +348,55 @@ export function createGatewayManagementServer(options = {}) {
           error: {
             type: 'gateway_anchor_catalog_failed',
             message: error?.message ?? String(error),
+          },
+        })
+      }
+      return
+    }
+
+    if (request.method === 'DELETE' && localUrl.pathname === '/__gateway/anchors') {
+      if (!config.deleteAnchor) {
+        sendJson(response, 501, { error: { type: 'gateway_anchor_delete_unavailable' } })
+        return
+      }
+      if (!mutationAuthorized(request)) {
+        sendJson(response, 403, {
+          error: {
+            type: 'gateway_management_mutation_forbidden',
+            message: 'Anchor deletion requires a same-app JSON request marker.',
+          },
+        })
+        return
+      }
+      try {
+        // Accept exactly one of path/id, either in the JSON body or in the
+        // query string; the catalog lookup enforces the exactly-one rule.
+        let input = await readJson(request)
+        if (!(input?.path || input?.id)) {
+          const path = localUrl.searchParams.get('path')
+          const id = localUrl.searchParams.get('id')
+          if (path !== null || id !== null) {
+            input = {
+              ...(path !== null ? { path } : {}),
+              ...(id !== null ? { id } : {}),
+            }
+          }
+        }
+        const deleted = await config.deleteAnchor(input)
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          deleted: { id: deleted.id, path: deleted.path },
+        })
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: {
+            type: error?.type ?? (
+              error?.statusCode === 404
+                ? 'gateway_anchor_not_found'
+                : 'gateway_anchor_delete_failed'
+            ),
+            message: error?.message ?? String(error),
+            referencedBy: error?.referencedBy,
           },
         })
       }
@@ -317,8 +449,18 @@ export function createGatewayManagementServer(options = {}) {
         return
       }
       try {
-        const profile = await config.updateProfile(profileMatch[1], await readJson(request))
-        sendJson(response, 200, { schemaVersion: 1, profile: publicProfile(profile) })
+        const result = await config.updateProfile(profileMatch[1], await readJson(request))
+        sendJson(response, 200, {
+          schemaVersion: 1,
+          profile: publicProfile(result?.profile ?? result),
+          ...(result?.documentView ? {
+            documentView: result.documentView,
+            affectedProfiles: result.affectedProfiles,
+            effectiveChanged: result.effectiveChanged,
+            restartRequired: result.restartRequired,
+            pendingRestart: result.pendingRestart,
+          } : {}),
+        })
       } catch (error) {
         sendJson(response, error?.statusCode ?? 400, {
           error: {
@@ -330,117 +472,15 @@ export function createGatewayManagementServer(options = {}) {
       return
     }
 
-    if (request.method === 'GET' && localUrl.pathname === '/__gateway/anchors/jobs') {
-      sendJson(response, 200, {
-        schemaVersion: 1,
-        jobs: config.anchorJobs?.list() ?? [],
-      })
-      return
-    }
-
-    if (request.method === 'POST' && localUrl.pathname === '/__gateway/anchors/jobs') {
-      if (!config.anchorJobs) {
-        sendJson(response, 501, { error: { type: 'gateway_anchor_builder_unavailable' } })
-        return
-      }
-      if (!mutationAuthorized(request)) {
-        sendJson(response, 403, {
-          error: {
-            type: 'gateway_management_mutation_forbidden',
-            message: 'Anchor creation requires a same-app JSON request marker.',
-          },
-        })
-        return
-      }
-      try {
-        const job = config.anchorJobs.start(await readJson(request))
-        sendJson(response, 202, { schemaVersion: 1, job })
-      } catch (error) {
-        sendJson(response, error?.statusCode ?? 400, {
-          error: {
-            type: 'gateway_anchor_job_rejected',
-            message: error?.message ?? String(error),
-          },
-        })
-      }
-      return
-    }
-
-    const anchorJobCandidateMatch = request.method === 'GET'
-      ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)\/candidates\/(\d+)$/i)
-      : null
-    if (anchorJobCandidateMatch) {
-      if (!config.anchorJobs?.getCandidate) {
-        sendJson(response, 501, { error: { type: 'gateway_anchor_builder_unavailable' } })
-        return
-      }
-      try {
-        const candidate = await config.anchorJobs.getCandidate(
-          anchorJobCandidateMatch[1],
-          anchorJobCandidateMatch[2],
-        )
-        sendJson(response, 200, { schemaVersion: 1, candidate })
-      } catch (error) {
-        sendJson(response, error?.statusCode ?? 400, {
-          error: {
-            type: 'gateway_anchor_candidate_unavailable',
-            message: error?.message ?? String(error),
-          },
-        })
-      }
-      return
-    }
-
-    const anchorJobMatch = request.method === 'GET'
-      ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)$/i)
-      : null
-    if (anchorJobMatch) {
-      const job = config.anchorJobs?.get(anchorJobMatch[1]) ?? null
-      sendJson(
-        response,
-        job ? 200 : 404,
-        job ?? { error: { type: 'gateway_anchor_job_not_found' } },
-      )
-      return
-    }
-
-    const anchorJobActionMatch = request.method === 'POST'
-      ? localUrl.pathname.match(/^\/__gateway\/anchors\/jobs\/([0-9a-f-]+)\/(select|discard)$/i)
-      : null
-    if (anchorJobActionMatch) {
-      if (!config.anchorJobs) {
-        sendJson(response, 501, { error: { type: 'gateway_anchor_builder_unavailable' } })
-        return
-      }
-      if (!mutationAuthorized(request)) {
-        sendJson(response, 403, {
-          error: {
-            type: 'gateway_management_mutation_forbidden',
-            message: 'Anchor selection requires a same-app JSON request marker.',
-          },
-        })
-        return
-      }
-      const [, jobId, action] = anchorJobActionMatch
-      try {
-        const input = await readJson(request)
-        if (action === 'discard' && input.candidate !== undefined) {
-          throw new Error('Discarding a job takes no candidate index.')
-        }
-        const job = action === 'select'
-          ? config.anchorJobs.select(jobId, input.candidate)
-          : config.anchorJobs.discard(jobId)
-        sendJson(response, 202, { schemaVersion: 1, job })
-      } catch (error) {
-        sendJson(response, error?.statusCode ?? 400, {
-          error: {
-            type: 'gateway_anchor_job_action_rejected',
-            message: error?.message ?? String(error),
-          },
-        })
-      }
-      return
-    }
+    if (await handleAnchorJobRoutes({
+      request,
+      response,
+      pathname: localUrl.pathname,
+      sendJson,
+      readJson,
+      mutationAuthorized,
+      anchorJobs: config.anchorJobs,
+    })) return
 
     const match = request.method === 'GET'
       ? localUrl.pathname.match(/^\/__gateway\/diagnostics\/([0-9a-f-]+)$/i)

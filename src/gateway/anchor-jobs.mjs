@@ -1,10 +1,26 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readFile, rm } from 'node:fs/promises'
+import { access, readFile, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
+import { loadAnchorArtifact } from './anchor.mjs'
+import { scanAnchorArtifacts } from './anchor-catalog.mjs'
+import {
+  comparableAnchorDisplayName,
+  nameReservationKey,
+  normalizeAnchorDisplayName,
+} from './anchor-manifest.mjs'
 import { cotStyleFromCounts, openingPreview } from './trajectory-stats.mjs'
-import { OPEN_WORKSTREAM_CONTINUATION_MESSAGE } from '../lab/anchor-profile.mjs'
+import {
+  OPEN_WORKSTREAM_CONTINUATION_MESSAGE,
+  OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY,
+} from '../lab/anchor-profile.mjs'
+import {
+  buildBuilderEnv,
+  redactBuilderText,
+  resolveCanonicalDefaultStart,
+} from '../lab/anchor-generation-gates.mjs'
 
 const BUILDER_PATH = fileURLToPath(new URL('../lab/run-anchor-candidate.mjs', import.meta.url))
 
@@ -40,6 +56,11 @@ function publicJob(job) {
     id: job.id,
     profile: job.profile,
     model: job.model,
+    requestedModel: job.requestedModel ?? job.model,
+    preset: job.preset ?? null,
+    fixtureId: job.fixtureId ?? null,
+    fixtureFingerprint: job.fixtureFingerprint ?? null,
+    candidateSetFingerprint: job.candidateSetFingerprint ?? null,
     status: job.status,
     createdAt: job.createdAt,
     startedAt: job.startedAt,
@@ -51,8 +72,11 @@ function publicJob(job) {
     continuationChars: job.continuationMessage.length,
     maximumUpstreamCalls: job.runs * job.maxSubturns,
     anchorPromptChars: job.anchorPrompt.length,
+    candidateSetId: job.candidateSetId,
+    displayName: job.displayName,
     anchorId: job.anchorId,
     artifactPath: job.artifactPath,
+    artifactFingerprint: job.artifactFingerprint,
     activated: job.activated,
     resultsPath: job.resultsPath,
     candidates: job.candidates,
@@ -147,7 +171,7 @@ function recommendedCandidate(summaries) {
       (left, right) =>
         Number(right.cot?.counts?.collective ?? 0) - Number(left.cot?.counts?.collective ?? 0) ||
         Number(left.cot?.counts?.interruptive ?? 0) - Number(right.cot?.counts?.interruptive ?? 0) ||
-        right.reasoningChars - left.reasoningChars ||
+        Number(right.usage?.totalTokens ?? 0) - Number(left.usage?.totalTokens ?? 0) ||
         left.candidateIndex - right.candidateIndex,
     )[0].candidateIndex
 }
@@ -161,7 +185,14 @@ async function loadCandidatesFromResults(job) {
   if (!candidates.length) {
     throw new Error(`Anchor builder produced no candidates: ${job.resultsPath}`)
   }
-  return { candidates, autoSelectedCandidate: recommendedCandidate(candidates) }
+  return {
+    candidates,
+    autoSelectedCandidate: recommendedCandidate(candidates),
+    fixtureId: stored.fixtureId ?? stored.anchor?.fixtureId ?? null,
+    fixtureFingerprint: stored.fixtureFingerprint ?? stored.anchor?.fixtureFingerprint ?? null,
+    candidateSetFingerprint: stored.candidateSetFingerprint ?? null,
+    requestedModel: stored.requestedModel ?? stored.model ?? job.model,
+  }
 }
 
 const PROGRESS_EVENT_LIMIT = 120
@@ -289,28 +320,29 @@ function runBuilder(job, profile, mode = {}) {
           '--candidate', String(mode.candidate),
         ]
       : [BUILDER_PATH, '--open-workstream']
-    const env = {
-      ...process.env,
-      DEEPSEEK_MODEL: job.model,
-      ANCHOR_RUNS: String(job.runs),
-      ANCHOR_MAX_SUBTURNS: String(job.maxSubturns),
-      ANCHOR_MAX_TOKENS: String(job.maxTokens),
-      DEEPSEEK_REASONING_EFFORT: job.reasoningEffort,
-      ANCHOR_CONTINUATION_MESSAGE: job.continuationMessage,
-      ANCHOR_ARTIFACT_ID: job.anchorId,
-      ANCHOR_OUTPUT_PATH: job.artifactPath,
-    }
-    if (freeze) {
-      delete env.DEEPSEEK_API_KEY
-      delete env.DEEPSEEK_BASE_URL
-      delete env.ANCHOR_USER_PROMPT
-      delete env.ANCHOR_RESULTS_PATH
-    } else {
-      env.DEEPSEEK_API_KEY = profile.gatewayApiKey
-      env.DEEPSEEK_BASE_URL = profile.upstreamBaseUrl
-      env.ANCHOR_RESULTS_PATH = job.resultsPath
-      env.ANCHOR_USER_PROMPT = job.anchorPrompt
-    }
+    const explicit = freeze
+      ? {
+          DEEPSEEK_MODEL: job.model,
+          ANCHOR_ARTIFACT_ID: job.anchorId,
+          ANCHOR_OUTPUT_PATH: job.artifactPath,
+          ANCHOR_DISPLAY_NAME: job.displayName,
+          ANCHOR_EXPECTED_FIXTURE_ID: job.fixtureId,
+          ANCHOR_EXPECTED_FIXTURE_FINGERPRINT: job.fixtureFingerprint,
+          ANCHOR_EXPECTED_CANDIDATE_SET_FINGERPRINT: job.candidateSetFingerprint,
+        }
+      : {
+          DEEPSEEK_MODEL: job.model,
+          ANCHOR_RUNS: String(job.runs),
+          ANCHOR_MAX_SUBTURNS: String(job.maxSubturns),
+          ANCHOR_MAX_TOKENS: String(job.maxTokens),
+          DEEPSEEK_REASONING_EFFORT: job.reasoningEffort,
+          ANCHOR_CONTINUATION_MESSAGE: job.continuationMessage,
+          DEEPSEEK_API_KEY: profile.gatewayApiKey,
+          DEEPSEEK_BASE_URL: profile.upstreamBaseUrl,
+          ANCHOR_RESULTS_PATH: job.resultsPath,
+          ANCHOR_USER_PROMPT: job.anchorPrompt,
+        }
+    const env = buildBuilderEnv(process.env, explicit)
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
       windowsHide: true,
@@ -331,9 +363,7 @@ function runBuilder(job, profile, mode = {}) {
         return
       }
       const secret = profile?.gatewayApiKey
-      const safeError = secret
-        ? stderr.replaceAll(secret, '[REDACTED]').trim()
-        : stderr.trim()
+      const safeError = redactBuilderText(stderr, [secret, explicit.DEEPSEEK_API_KEY]).trim()
       rejectPromise(new Error(
         safeError || `Anchor builder exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}.`,
       ))
@@ -347,8 +377,14 @@ export class AnchorJobManager {
     this.activateAnchor = options.activateAnchor
     this.runBuilder = options.runBuilder ?? runBuilder
     this.loadCandidates = options.loadCandidates ?? loadCandidatesFromResults
+    this.getConfigGeneration = options.getConfigGeneration ?? ((name) => {
+      const profile = this.getProfile?.(name)
+      return Number(profile?.configGeneration ?? 0)
+    })
+    this.anchorDirectory = options.anchorDirectory ?? resolve('anchors')
     this.jobs = new Map()
     this.runningProfiles = new Set()
+    this.nameReservations = new Map()
     this.historyLimit = options.historyLimit ?? 20
   }
 
@@ -375,31 +411,54 @@ export class AnchorJobManager {
     }
 
     const id = randomUUID()
-    const anchorPrompt = String(input.anchorPrompt ?? '').trim()
-    if (anchorPrompt.length < 20 || anchorPrompt.length > 8_000) {
+    const canonical = resolveCanonicalDefaultStart(input)
+    const anchorPrompt = canonical.preset
+      ? canonical.anchorPrompt
+      : String(input.anchorPrompt ?? '').trim()
+    if (!canonical.preset && (anchorPrompt.length < 20 || anchorPrompt.length > 8_000)) {
       throw new Error('anchorPrompt must contain 20 to 8000 characters.')
     }
-    const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
-    const anchorId = `${profile.models[0]}-open-workstream-${timestamp}-${id.slice(0, 8)}`
+    const continuationMessage = canonical.preset
+      ? canonical.continuationMessage
+      : input.continuationMessage === undefined || input.continuationMessage === null
+        ? OPEN_WORKSTREAM_CONTINUATION_MESSAGE
+        : String(input.continuationMessage)
+    if (continuationMessage.length > 4_000) {
+      throw new Error('continuationMessage must contain 0 to 4000 characters.')
+    }
     const job = {
       id,
       profile: profileName,
       model: profile.models[0],
+      requestedModel: profile.models[0],
+      preset: canonical.preset,
+      fixtureId: OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY.fixtureId,
+      fixtureFingerprint: OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY.fingerprint,
+      candidateSetFingerprint: null,
       status: 'queued',
       createdAt: new Date().toISOString(),
       startedAt: null,
       completedAt: null,
-      runs: integer(input.runs, 3, 1, 10, 'runs'),
-      maxSubturns: integer(input.maxSubturns, 6, 3, 12, 'maxSubturns'),
-      maxTokens: integer(input.maxTokens, 384_000, 1, 384_000, 'maxTokens'),
-      reasoningEffort: reasoningEffort(input.reasoningEffort),
-      continuationMessage: String(
-        input.continuationMessage ?? OPEN_WORKSTREAM_CONTINUATION_MESSAGE,
-      ).trim(),
+      runs: canonical.preset ? canonical.runs : integer(input.runs, 3, 1, 10, 'runs'),
+      maxSubturns: canonical.preset
+        ? canonical.maxSubturns
+        : integer(input.maxSubturns, 6, 3, 12, 'maxSubturns'),
+      maxTokens: canonical.preset
+        ? canonical.maxTokens
+        : integer(input.maxTokens, 384_000, 1, 384_000, 'maxTokens'),
+      reasoningEffort: canonical.preset
+        ? canonical.reasoningEffort
+        : reasoningEffort(input.reasoningEffort),
+      continuationMessage,
       anchorPrompt,
-      anchorId,
-      artifactPath: resolve('anchors', `${anchorId}.json`),
+      candidateSetId: id,
+      displayName: null,
+      anchorId: null,
+      artifactPath: null,
+      artifactFingerprint: null,
       resultsPath: resolve('results', 'anchor-jobs', `${id}.json`),
+      configGeneration: this.getConfigGeneration(profileName),
+      reservationKey: null,
       activated: false,
       candidates: null,
       autoSelectedCandidate: null,
@@ -411,9 +470,6 @@ export class AnchorJobManager {
       error: null,
       child: null,
     }
-    if (!job.continuationMessage || job.continuationMessage.length > 4_000) {
-      throw new Error('continuationMessage must contain 1 to 4000 characters.')
-    }
     this.jobs.set(id, job)
     this.runningProfiles.add(profileName)
     this.#trim()
@@ -421,22 +477,61 @@ export class AnchorJobManager {
     return publicJob(job)
   }
 
-  select(id, candidateIndex) {
+  select(id, input = {}) {
     const job = this.jobs.get(id)
     if (!job) throw jobError(404, 'Anchor job not found.')
     if (job.status !== 'awaiting-selection') {
       throw jobError(409, `Anchor job ${id} is not awaiting a candidate selection (status: ${job.status}).`)
     }
-    const index = Number(candidateIndex)
+    const index = Number(input?.candidate)
     const candidate = job.candidates?.find(
       (item) => item.candidateIndex === index,
     )
     if (!candidate) {
-      throw jobError(400, `Candidate ${candidateIndex} is not part of job ${id}.`)
+      throw jobError(400, `Candidate ${input?.candidate} is not part of job ${id}.`)
     }
-    job.status = 'freezing'
+    let displayName
+    try {
+      displayName = normalizeAnchorDisplayName(input?.displayName)
+    } catch (error) {
+      const wrapped = jobError(400, error.message)
+      wrapped.type = error.type ?? 'gateway_anchor_display_name_invalid'
+      throw wrapped
+    }
+    const activate = input?.activate !== false
+    // Atomically leave awaiting-selection before the first await.
+    job.status = 'reserving-name'
     job.error = null
-    void this.#freeze(job, index)
+    job.selectedCandidate = index
+    job.displayName = displayName
+    return this.#saveSelected(job, { activate, candidateIndex: index })
+  }
+
+  async activate(id) {
+    const job = this.jobs.get(id)
+    if (!job) throw jobError(404, 'Anchor job not found.')
+    if (!['saved', 'saved-not-activated'].includes(job.status)) {
+      throw jobError(409, `Anchor job ${id} cannot be activated (status: ${job.status}).`)
+    }
+    if (!job.artifactPath) {
+      throw jobError(409, 'Anchor job has no saved artifact to activate.')
+    }
+    if (!(await pathExists(job.artifactPath))) {
+      throw jobError(409, `Saved Anchor artifact is missing: ${job.artifactPath}`)
+    }
+    try {
+      await this.activateAnchor(job.profile, job.artifactPath)
+      job.activated = true
+      job.status = 'succeeded'
+      job.error = null
+    } catch (error) {
+      job.status = 'saved-not-activated'
+      job.activated = false
+      job.error = error?.message ?? String(error)
+      throw jobError(error?.statusCode ?? 409, job.error)
+    } finally {
+      job.completedAt = new Date().toISOString()
+    }
     return publicJob(job)
   }
 
@@ -487,6 +582,12 @@ export class AnchorJobManager {
       const loaded = await this.loadCandidates(job)
       job.candidates = loaded.candidates
       job.autoSelectedCandidate = loaded.autoSelectedCandidate
+      if (loaded.fixtureId) job.fixtureId = loaded.fixtureId
+      if (loaded.fixtureFingerprint) job.fixtureFingerprint = loaded.fixtureFingerprint
+      if (loaded.candidateSetFingerprint) {
+        job.candidateSetFingerprint = loaded.candidateSetFingerprint
+      }
+      if (loaded.requestedModel) job.requestedModel = loaded.requestedModel
       job.status = 'awaiting-selection'
     } catch (error) {
       job.status = 'failed'
@@ -497,31 +598,141 @@ export class AnchorJobManager {
     }
   }
 
-  async #freeze(job, candidateIndex) {
+  async #saveSelected(job, { activate, candidateIndex }) {
+    const reservationKey = nameReservationKey(job.model, job.displayName)
     try {
+      const catalog = await scanAnchorArtifacts({ includeControls: true })
+      this.#assertNameAvailable(job, catalog, reservationKey)
+      this.nameReservations.set(reservationKey, job.id)
+      job.reservationKey = reservationKey
+
+      const catalogAgain = await scanAnchorArtifacts({ includeControls: true })
+      this.#assertNameAvailable(job, catalogAgain, reservationKey)
+
+      const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
+      job.anchorId = `${job.model}-open-workstream-${timestamp}-${job.id.slice(0, 8)}`
+      job.artifactPath = resolve(this.anchorDirectory, `${job.anchorId}.json`)
+
       await this.runBuilder(job, null, {
         fromResults: job.resultsPath,
         candidate: candidateIndex,
       })
-      await this.activateAnchor(job.profile, job.artifactPath)
-      job.activated = true
-      job.selectedCandidate = candidateIndex
-      job.status = 'succeeded'
+
+      if (!(await pathExists(job.artifactPath))) {
+        throw new Error(`Anchor builder did not create ${job.artifactPath}`)
+      }
+
+      const loaded = await loadAnchorArtifact(job.artifactPath)
+      if (loaded.id !== job.anchorId) {
+        throw new Error(
+          `Artifact id ${loaded.id} does not match job identity ${job.anchorId}.`,
+        )
+      }
+      if (basename(job.artifactPath) !== `${job.anchorId}.json`) {
+        throw new Error(
+          `Artifact file name ${basename(job.artifactPath)} does not match job identity ${job.anchorId}.`,
+        )
+      }
+      if (loaded.artifact.displayName !== job.displayName) {
+        throw new Error(
+          `Artifact displayName does not match the reserved name for job ${job.id}.`,
+        )
+      }
+      job.artifactFingerprint = loaded.fingerprint
+      this.#releaseName(job)
+
+      if (!activate) {
+        job.status = 'saved'
+        job.activated = false
+        return publicJob(job)
+      }
+
+      if (this.getConfigGeneration(job.profile) !== job.configGeneration) {
+        job.status = 'saved-not-activated'
+        job.activated = false
+        job.error = 'Profile configuration changed since the job started.'
+        throw jobError(409, job.error)
+      }
+
+      try {
+        await this.activateAnchor(job.profile, job.artifactPath, {
+          expectedGeneration: job.configGeneration,
+        })
+        job.activated = true
+        job.status = 'succeeded'
+        job.error = null
+      } catch (error) {
+        job.status = 'saved-not-activated'
+        job.activated = false
+        job.error = error?.message ?? String(error)
+      }
+      return publicJob(job)
     } catch (error) {
-      job.status = 'failed'
+      const saved = job.artifactPath ? await pathExists(job.artifactPath) : false
+      if (!saved) {
+        this.#releaseName(job)
+        job.anchorId = null
+        job.artifactPath = null
+        job.artifactFingerprint = null
+        job.status = error?.statusCode === 409 ? 'awaiting-selection' : 'failed'
+      } else {
+        this.#releaseName(job)
+        job.status = 'saved-not-activated'
+      }
       job.error = error?.message ?? String(error)
+      if (error?.statusCode) throw error
+      throw jobError(saved ? 409 : 500, job.error)
     } finally {
       job.completedAt = new Date().toISOString()
     }
   }
 
+  #assertNameAvailable(job, catalog, reservationKey) {
+    const reservedBy = this.nameReservations.get(reservationKey)
+    if (reservedBy && reservedBy !== job.id) {
+      throw jobError(409, 'Display name is already reserved for this model.')
+    }
+    const normalized = comparableAnchorDisplayName(job.displayName)
+    const taken = catalog.find((artifact) =>
+      artifact.model === job.model &&
+      comparableAnchorDisplayName(artifact.displayName) === normalized,
+    )
+    if (taken) {
+      throw jobError(409, 'Display name already exists for this model.')
+    }
+  }
+
+  #releaseName(job) {
+    if (!job.reservationKey) return
+    if (this.nameReservations.get(job.reservationKey) === job.id) {
+      this.nameReservations.delete(job.reservationKey)
+    }
+    job.reservationKey = null
+  }
+
   #trim() {
     if (this.jobs.size <= this.historyLimit) return
     const removable = [...this.jobs.values()]
-      .filter((job) => !['queued', 'running', 'awaiting-selection', 'freezing'].includes(job.status))
+      .filter((job) => ![
+        'queued',
+        'running',
+        'awaiting-selection',
+        'reserving-name',
+        'saved',
+        'saved-not-activated',
+      ].includes(job.status))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     while (this.jobs.size > this.historyLimit && removable.length) {
       this.jobs.delete(removable.shift().id)
     }
+  }
+}
+
+async function pathExists(path) {
+  try {
+    await access(path, constants.F_OK)
+    return true
+  } catch {
+    return false
   }
 }

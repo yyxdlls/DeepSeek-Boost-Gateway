@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { validateAnchorArtifact } from '../src/gateway/anchor.mjs'
 
 const artifactUrl = new URL(
   '../anchors/dsh-minimal-two-tool-v1.json',
   import.meta.url,
 )
 const openArtifactUrl = new URL(
-  '../anchors/dsh-minimal-open-workstream-pro.json',
+  '../anchors/legacy/dsh-minimal-open-workstream-pro.json',
   import.meta.url,
 )
 
@@ -70,7 +71,7 @@ test('frozen two-tool anchor passes independent integrity and shape checks', asy
   assert.doesNotMatch(serialized, /sk-[A-Za-z0-9]+/)
 })
 
-test('frozen open-workstream anchor remains unfinished and internally valid', async () => {
+test('legacy bundled open-workstream anchor remains unfinished and internally valid', async () => {
   const serialized = await readFile(openArtifactUrl, 'utf8')
   const artifact = JSON.parse(serialized)
   const storedFingerprint = artifact.artifactFingerprint
@@ -110,4 +111,57 @@ test('frozen open-workstream anchor remains unfinished and internally valid', as
     true,
   )
   assert.doesNotMatch(serialized, /sk-[A-Za-z0-9]+/)
+})
+
+test('v1 artifacts remain loadable without displayName', async () => {
+  const artifact = JSON.parse(await readFile(artifactUrl, 'utf8'))
+  assert.equal(artifact.schemaVersion, 1)
+  assert.equal(artifact.displayName, undefined)
+  assert.equal(validateAnchorArtifact(artifact), artifact)
+})
+
+test('v2 artifacts require displayName in the fingerprint and a final assistant', () => {
+  const core = {
+    schemaVersion: 2,
+    kind: 'deepseek-v4-anchor-artifact',
+    id: 'v2-name-fingerprint',
+    displayName: '名称甲',
+    createdAt: '2026-08-24T00:00:00.000Z',
+    source: { model: 'deepseek-v4-pro' },
+    trajectory: {
+      messages: [
+        { role: 'user', content: 'Begin.' },
+        { role: 'assistant', content: 'Done.', reasoning_content: '' },
+      ],
+    },
+    verification: { eligible: true },
+  }
+  const first = { ...core, artifactFingerprint: createHash('sha256').update(JSON.stringify(core)).digest('hex') }
+  assert.equal(validateAnchorArtifact(first), first)
+
+  const renamed = { ...core, displayName: '名称乙' }
+  const second = {
+    ...renamed,
+    artifactFingerprint: createHash('sha256').update(JSON.stringify(renamed)).digest('hex'),
+  }
+  assert.notEqual(first.artifactFingerprint, second.artifactFingerprint)
+  assert.equal(validateAnchorArtifact(second), second)
+
+  const missingName = { ...core }
+  delete missingName.displayName
+  const withoutName = {
+    ...missingName,
+    artifactFingerprint: createHash('sha256').update(JSON.stringify(missingName)).digest('hex'),
+  }
+  assert.throws(() => validateAnchorArtifact(withoutName), /displayName/)
+
+  const openEnded = {
+    ...core,
+    trajectory: { messages: [{ role: 'user', content: 'Begin.' }, { role: 'tool', content: 'ok' }] },
+  }
+  const withoutAssistant = {
+    ...openEnded,
+    artifactFingerprint: createHash('sha256').update(JSON.stringify(openEnded)).digest('hex'),
+  }
+  assert.throws(() => validateAnchorArtifact(withoutAssistant), /final assistant/)
 })

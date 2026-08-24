@@ -9,9 +9,19 @@ import {
   loadManagedConfig,
 } from '../src/gateway/managed-config.mjs'
 import {
+  gatewayCombinedProfile,
   gatewayManagementConfig,
   gatewayRuntimeProfiles,
+  validateGatewayDeployment,
 } from '../src/gateway/runtime-config.mjs'
+
+function profileKeyConfigured(profile) {
+  const planes = Array.isArray(profile?.planes) ? profile.planes : []
+  if (planes.length > 0) {
+    return planes.some((plane) => plane.enabled !== false && plane.gatewayApiKey)
+  }
+  return Boolean(profile?.gatewayApiKey)
+}
 
 const NO_OPEN = process.argv.includes('--no-open') || process.env.GATEWAY_NO_OPEN === '1'
 
@@ -37,9 +47,10 @@ export function gatewayUrls(env = process.env) {
 }
 
 export function gatewayLaunchConfiguration(env = process.env) {
+  validateGatewayDeployment(env)
   const deploymentMode = env.GATEWAY_INSTANCE_MODE ?? 'single'
   const profiles = gatewayRuntimeProfiles(env)
-  if (deploymentMode === 'split') {
+  if (['split', 'all'].includes(deploymentMode)) {
     const management = gatewayManagementConfig(env)
     const managementUrls = gatewayUrls({
       GATEWAY_HOST: management.host,
@@ -49,15 +60,26 @@ export function gatewayLaunchConfiguration(env = process.env) {
       deploymentMode,
       webUi: managementUrls.webUi,
       health: managementUrls.health,
-      apis: profiles.map((profile) => ({
+      apis: [
+        ...profiles.map((profile) => ({
         profile: profile.name,
         model: profile.models[0],
-        keyConfigured: Boolean(profile.gatewayApiKey),
+        keyConfigured: profileKeyConfigured(profile),
         url: gatewayUrls({
           GATEWAY_HOST: profile.host,
           GATEWAY_PORT: String(profile.port),
         }).api,
-      })),
+        })),
+        ...(deploymentMode === 'all' ? [gatewayCombinedProfile(env)].map((profile) => ({
+          profile: profile.name,
+          model: profile.models.join(','),
+          keyConfigured: profileKeyConfigured(profile),
+          url: gatewayUrls({
+            GATEWAY_HOST: profile.host,
+            GATEWAY_PORT: String(profile.port),
+          }).api,
+        })) : []),
+      ],
     }
   }
 
@@ -69,7 +91,7 @@ export function gatewayLaunchConfiguration(env = process.env) {
     apis: [{
       profile: 'single',
       model: profiles[0].models.join(','),
-      keyConfigured: Boolean(profiles[0].gatewayApiKey),
+      keyConfigured: profileKeyConfigured(profiles[0]),
       url: urls.api,
     }],
   }
@@ -145,9 +167,7 @@ async function openWhenReady(url, healthUrl) {
 async function main() {
   loadLocalEnv()
   const managedDocument = await loadManagedConfig(DEFAULT_MANAGED_CONFIG_PATH)
-  const launchEnvironment = (process.env.GATEWAY_INSTANCE_MODE ?? 'single') === 'split'
-    ? applyManagedConfig(process.env, managedDocument)
-    : process.env
+  const launchEnvironment = applyManagedConfig(process.env, managedDocument)
   const launch = gatewayLaunchConfiguration(launchEnvironment)
   for (const api of launch.apis) {
     if (!api.keyConfigured) {

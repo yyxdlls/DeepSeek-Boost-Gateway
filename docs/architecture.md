@@ -2,9 +2,9 @@
 
 ## 产品边界
 
-目标产品是一个本地 Web Gateway：数据面向 Harness 暴露 OpenAI-compatible API，管理面负责 Provider、Execution Profile、Anchor Artifact、实验和诊断。
+目标产品是一个本地 Web Gateway：数据面向 Harness 暴露 OpenAI-compatible API，管理面负责 Provider、Execution Profile、Anchor Artifact、微锚点、实验和诊断。
 
-Phase 0 的协议实验已经完成。当前数据面实现固定结构化 Anchor replay、透明代理和模型隔离；管理面提供 JSON/CLI 诊断、Gateway 内置 WebUI、Pro/Flash 独立持久化配置、子进程热切换、跨重启诊断恢复和后台 Anchor 创建。动态 promotion 仍属于后续产品层，不参与当前已验证机制。
+Phase 0 的协议实验已经完成。当前数据面实现固定结构化 Anchor replay、逐条 user 末尾的微锚点追加、透明代理和模型隔离；管理面提供 JSON/CLI 诊断、Gateway 内置 WebUI、Pro/Flash/Vision 独立持久化配置、子进程热切换、跨重启诊断恢复和后台 Anchor 创建。动态 promotion 仍属于后续产品层，不参与当前已验证机制。
 
 第一道门槛是两臂协议实验：固定模型、system、任务、thinking 和 256000 输出上限，只比较当前 Windows DSH Standard-family 的 `pwsh + read` 对照与真实 DSH Minimal 的 `persistent bash + str_replace_editor` schema。两臂交错运行，避免把低输出预算或短时后端漂移误判成工具协议效果。该实验只观察首次工具调用前的 reasoning，不执行模型生成的命令。
 
@@ -44,7 +44,63 @@ JSON 与 SSE 进入同一个响应观测器。SSE 在转发过程中按 choice �
 
 每次响应还记录 finish reason、usage、工具调用序列、客户端断流和上游传输错误。只读诊断面默认保留内存中的最近 100 次统计，不返回原始提示或回复；JSONL metadata 日志有大小与份数上限。
 
-本地 WebUI 由 Gateway 管理父进程直接提供无构建步骤的静态资源。兼容 `single` 模式下它与数据面共用监听；`split` 模式下管理/WebUI 留在父进程，Pro 与 Flash 数据面分别运行在受 IPC 监管的子进程和独立端口。父进程结束或 IPC 断开时，子进程主动退出。数据端口不提供页面或公开诊断路径。管理令牌只进入自定义请求头并保存在标签页 sessionStorage，既不进入 URL 也不由 Gateway 返回。所有 `/__gateway/` 路径均在本地终止，不能回落到 Provider。
+本地 WebUI 由 Gateway 管理父进程直接提供无构建步骤的静态资源。兼容 `single` 模式下它与数据面共用监听；`split` 模式下管理/WebUI 留在父进程，Pro、Flash 与 Vision 数据面分别运行在受 IPC 监管的子进程和独立端口。父进程结束或 IPC 断开时，子进程主动退出。数据端口不提供页面或公开诊断路径。管理令牌只进入自定义请求头并保存在标签页 sessionStorage，既不进入 URL 也不由 Gateway 返回。所有 `/__gateway/` 路径均在本地终止，不能回落到 Provider。
+
+## Anchor Artifact v2 与 manifest
+
+新 Artifact 使用 `schemaVersion: 2`，新增必填 `displayName`。`displayName` 写入 core 后参与 Artifact fingerprint；v1 Artifact 继续只读兼容，显示名回退 manifest displayName 或 Artifact id。
+
+角色由 manifest（`src/gateway/anchor-manifest.mjs`，等价于 `anchors/manifest.json`）声明：
+
+- `default`：模型原生示例（产品可见、可选）；
+- `control`：实验/开发控制项（产品不可见、不可选；content API 仍可读，普通 UI 无入口）；
+- `user`：非 manifest 且通过验证的用户生成 Artifact（产品可见、可选）；
+- `copiedBaseline`：完全排除并拒绝运行时加载。
+
+当前 manifest 角色：`deepseek-v4-pro-open-workstream-20260824101411-f2a74161.json` = `default`（Pro 原生，固定指纹）；`deepseek-v4-flash-open-workstream-20260824101819-8a8a3211.json` = `default`（Flash 原生，固定指纹）；`deepseek-v4-flash-vision-exp-open-workstream-20260824102129-7cdd27aa.json` = `default`（Vision 原生，固定指纹）；`dsh-minimal-two-tool-v1.json` = `control`（开发只读）。
+
+命名与保存生命周期：用户名称不参与机器 id/path；机器 id/path 由服务端生成（模型 + 时间 + UUID），文件 `wx` create-only，拒绝覆盖。候选选用并保存时校验并占位名称（同模型唯一），保存失败且未落盘时释放；保存成功但绑定失败进入 `saved-not-activated`，可重新绑定，不重复生成。不提供保存后原地重命名。
+
+## 历史重建与组合顺序
+
+Chat Completions 唯一增强编排入口先重建第三方 user 历史，再按模式组合 Full Anchor，并合并诊断 metrics：
+
+```text
+原始第三方 messages
+  → 克隆并保留第三方来源（origin[] 与消息等长，不上 internal 字段）
+  → 微锚开启时：只处理 role=user
+      · 字符串：`U + "\n\n<M>"`
+      · content 数组：保留全部原 part 与顺序，追加 {type:"text", text:"\n\n<M>"}
+      · 其他类型：整单返回 gateway_micro_anchor_unsupported_user_content
+  → thirdPartyHistoryFingerprint = 变换后 messages 规范 JSON 的 SHA-256
+  → Full Anchor（anchor 模式）：Full trajectory → harness bridge → 第三方会话
+  → 出站剥离内部包装，只包含上游合法 message 字段
+```
+
+- 微锚与 Full Anchor 相互独立；`x-deepseek-boost-mode: bypass` 只绕过 Full Anchor。
+- Full bootstrap / bridge / system / developer / assistant / tool 均不追加微锚；最新消息为 assistant/tool 时只重建此前 user。
+- 每次无条件追加一次，不做后缀猜测；Gateway 无状态，依赖 Harness 回传完整且一致的未注入历史。
+
+## 配置迁移
+
+managed config 保存 `schemaVersion: 2`：`microAnchors.definitions`（自定义定义）+ 各 profile `microAnchor: { enabled, selectedId }` + 既有 `deployment` / `profiles` / Key 字段原样保留。
+
+- 加载接受 v1/v2；v1 在内存迁移为 v2，未配置微锚的模型解析为 baseline（内置默认微锚，`enabled=true`）；下一次成功保存才以 v2 原子落盘。
+- 写文件使用同目录临时文件 + 原子替换，失败时保留旧文件。
+- 每个模型独立解析；非法 `selectedId` 启动/保存 fail closed，不静默回落。
+- 微锚定义与正文不进入 `process.env`，不扩展 `ENV_FIELDS`。
+
+## 运行时回滚
+
+所有 managed mutation（部署、Profile、微锚定义 CRUD、微锚选择、Anchor 自动绑定）共用串行 coordinator 的读写契约：
+
+1. `commit` 内串行执行；候选文档先经统一校验（候选 document 校验、原子保存）。
+2. 计算 `affectedRuntimeProfiles(from, to)`：按有效 profile 签名差异得出受影响 split/combined 实例（combined 消费任一模型的 Anchor 路径或微锚映射变化时也必须重建）。
+3. 按确定顺序逐个 `#reconfigure`（stop/start 完整 profile 快照），记录 `{name, beforeProfile, afterProfile, activeState}`；失败时逆序恢复 `activeState=after` 项；保存失败同样回滚。
+4. 恢复失败会保留原错并记录 `restoreError`，runtime 进入 degraded 并阻止后续 mutation。
+5. split/all 重启在存储前完成，commit 成功即生效；single 下有效映射变化返回 `restartRequired: true, pendingRestart: true`，下次启动生效。
+
+承诺「配置最终全成或回滚、单请求只看到完整旧/新快照」；不承诺跨端口同一微秒切换，不承诺超过关闭宽限期的长流式请求不中断。Key、端口、Anchor 路径、日志与已有诊断存储不回滚丢失。
 
 ## 运行时切换
 

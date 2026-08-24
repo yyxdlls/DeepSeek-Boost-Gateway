@@ -3,7 +3,8 @@ import { join } from 'node:path'
 const MODEL_PRO = 'deepseek-v4-pro'
 const MODEL_FLASH = 'deepseek-v4-flash'
 const MODEL_VISION = 'deepseek-v4-flash-vision-exp'
-const DEFAULT_PRO_ANCHOR_PATH = 'anchors/dsh-minimal-open-workstream-pro.json'
+const DEFAULT_PRO_ANCHOR_PATH = 'anchors/deepseek-v4-pro-open-workstream-20260824101411-f2a74161.json'
+export const DEFAULT_UPSTREAM_BASE_URL = 'https://api.deepseek.com'
 
 const SPLIT_PROFILE_DESCRIPTORS = Object.freeze([
   Object.freeze({
@@ -43,6 +44,16 @@ function nonEmpty(...values) {
   return values.find((value) => value !== undefined && String(value).trim() !== '') ?? ''
 }
 
+export function resolveAnchorPath(environment, keys, defaultPath) {
+  const source = environment ?? {}
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue
+    const value = source[key]
+    return value === undefined || value === null ? '' : String(value)
+  }
+  return defaultPath === undefined || defaultPath === null ? '' : String(defaultPath)
+}
+
 function enabled(value, fallback) {
   if (value === undefined || value === '') return fallback
   if (/^(1|true|yes|on)$/i.test(value)) return true
@@ -71,71 +82,138 @@ function sharedOptions(env) {
   }
 }
 
-function singleProfile(env) {
-  const models = (env.GATEWAY_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','))
+function parseModelList(value, fallback) {
+  return String(value ?? fallback)
     .split(',')
     .map((model) => model.trim())
     .filter(Boolean)
+}
+
+function ownProfileApiKey(env, prefix) {
+  return String(env[`${prefix}_UPSTREAM_API_KEY`] ?? '').trim()
+}
+
+function ownProfileUpstream(env, prefix) {
+  return String(env[`${prefix}_UPSTREAM_BASE_URL`] ?? '').trim() || DEFAULT_UPSTREAM_BASE_URL
+}
+
+function descriptorAnchorPath(env, descriptor) {
+  return resolveAnchorPath(
+    env,
+    descriptor.model === MODEL_PRO
+      ? [`${descriptor.prefix}_ANCHOR_PATH`, 'GATEWAY_ANCHOR_PATH']
+      : [`${descriptor.prefix}_ANCHOR_PATH`],
+    descriptor.defaultAnchorPath,
+  )
+}
+
+function listenerAnchorPaths(env) {
   return {
+    [MODEL_PRO]: resolveAnchorPath(
+      env,
+      ['GATEWAY_PRO_ANCHOR_PATH', 'GATEWAY_ANCHOR_PATH'],
+      DEFAULT_PRO_ANCHOR_PATH,
+    ),
+    [MODEL_FLASH]: resolveAnchorPath(env, ['GATEWAY_FLASH_ANCHOR_PATH'], ''),
+    [MODEL_VISION]: resolveAnchorPath(env, ['GATEWAY_VISION_ANCHOR_PATH'], ''),
+  }
+}
+
+export function gatewayModelPlanes(env = process.env) {
+  return SPLIT_PROFILE_DESCRIPTORS.map((descriptor) => {
+    const gatewayApiKey = ownProfileApiKey(env, descriptor.prefix)
+    return {
+      name: descriptor.name,
+      model: descriptor.model,
+      enabled: enabled(
+        env[`${descriptor.prefix}_ENABLED`],
+        descriptor.defaultEnabled,
+      ),
+      upstreamBaseUrl: ownProfileUpstream(env, descriptor.prefix),
+      gatewayApiKey,
+      gatewayApiKeySource: gatewayApiKey ? 'profile' : 'none',
+      defaultMode: nonEmpty(
+        env[`${descriptor.prefix}_ENHANCEMENT_MODE`],
+        descriptor.defaultMode,
+      ),
+      anchorPath: descriptorAnchorPath(env, descriptor),
+    }
+  })
+}
+
+export function warnIfUnusableGlobalUpstreamKey(env = process.env, write = (line) => {
+  process.stderr.write(line)
+}) {
+  const globalKey = String(env.GATEWAY_UPSTREAM_API_KEY ?? '').trim()
+  if (!globalKey) return false
+  const hasOwnKey = SPLIT_PROFILE_DESCRIPTORS.some((descriptor) => (
+    ownProfileApiKey(env, descriptor.prefix)
+  ))
+  if (hasOwnKey) return false
+  const mode = env.GATEWAY_INSTANCE_MODE ?? 'single'
+  const modelCount = mode === 'split'
+    ? gatewaySplitProfiles(env).length
+    : parseModelList(
+      mode === 'all'
+        ? env.GATEWAY_COMBINED_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(',')
+        : env.GATEWAY_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
+      [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
+    ).length
+  if (modelCount < 2) return false
+  write(
+    'Gateway warning: GATEWAY_UPSTREAM_API_KEY is set, but no per-model GATEWAY_*_UPSTREAM_API_KEY is configured. Multi-model routing will not share this key; requests for a model without its own key return 503.\n',
+  )
+  return true
+}
+
+function multiModelListenerProfile(env, options) {
+  return {
+    name: options.name,
+    host: options.host,
+    port: options.port,
+    models: options.models,
+    planes: gatewayModelPlanes(env),
+    managementToken: env.GATEWAY_MANAGEMENT_TOKEN ?? '',
+    anchorPaths: listenerAnchorPaths(env),
+    logDir: options.logDir,
+    ...sharedOptions(env),
+  }
+}
+
+function singleProfile(env) {
+  const models = parseModelList(
+    env.GATEWAY_MODELS,
+    [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
+  )
+  return multiModelListenerProfile(env, {
     name: 'single',
     host: env.GATEWAY_HOST ?? '127.0.0.1',
     port: port(env.GATEWAY_PORT, 8642, 'GATEWAY_PORT'),
     models,
-    upstreamBaseUrl: env.GATEWAY_UPSTREAM_BASE_URL ?? 'https://api.deepseek.com',
-    gatewayApiKey: env.GATEWAY_UPSTREAM_API_KEY ?? '',
-    managementToken: env.GATEWAY_MANAGEMENT_TOKEN ?? '',
-    defaultMode: env.GATEWAY_ENHANCEMENT_MODE ?? (
-      models.length === 1 && models[0] === MODEL_PRO ? 'anchor' : 'bypass'
-    ),
-    anchorPaths: {
-      [MODEL_PRO]: nonEmpty(
-        env.GATEWAY_PRO_ANCHOR_PATH,
-        env.GATEWAY_ANCHOR_PATH,
-        DEFAULT_PRO_ANCHOR_PATH,
-      ),
-      [MODEL_FLASH]: nonEmpty(env.GATEWAY_FLASH_ANCHOR_PATH),
-      [MODEL_VISION]: nonEmpty(env.GATEWAY_VISION_ANCHOR_PATH),
-    },
     logDir: env.GATEWAY_LOG_DIR,
-    ...sharedOptions(env),
-  }
+  })
 }
 
 function splitProfile(env, descriptor) {
   const prefix = descriptor.prefix
   const sharedLogRoot = env.GATEWAY_LOG_DIR ?? join(process.cwd(), 'results', 'gateway')
-  const profileApiKey = env[`${prefix}_UPSTREAM_API_KEY`]
-  const gatewayApiKey = nonEmpty(profileApiKey, env.GATEWAY_UPSTREAM_API_KEY)
+  const plane = gatewayModelPlanes(env).find((item) => item.name === descriptor.name)
   return {
     name: descriptor.name,
     host: nonEmpty(env[`${prefix}_HOST`], env.GATEWAY_HOST, '127.0.0.1'),
     port: port(env[`${prefix}_PORT`], descriptor.defaultPort, `${prefix}_PORT`),
     models: [descriptor.model],
-    upstreamBaseUrl: nonEmpty(
-      env[`${prefix}_UPSTREAM_BASE_URL`],
-      env.GATEWAY_UPSTREAM_BASE_URL,
-      'https://api.deepseek.com',
-    ),
-    gatewayApiKey,
-    gatewayApiKeySource: String(profileApiKey ?? '').trim()
-      ? 'profile'
-      : gatewayApiKey
-        ? 'shared-fallback'
-        : 'none',
+    planes: plane ? [plane] : [],
+    upstreamBaseUrl: plane?.upstreamBaseUrl ?? DEFAULT_UPSTREAM_BASE_URL,
+    gatewayApiKey: plane?.gatewayApiKey ?? '',
+    gatewayApiKeySource: plane?.gatewayApiKeySource ?? 'none',
     managementToken: nonEmpty(
       env[`${prefix}_MANAGEMENT_TOKEN`],
       env.GATEWAY_MANAGEMENT_TOKEN,
     ),
-    defaultMode: nonEmpty(
-      env[`${prefix}_ENHANCEMENT_MODE`],
-      descriptor.defaultMode,
-    ),
+    defaultMode: plane?.defaultMode ?? descriptor.defaultMode,
     anchorPaths: {
-      [descriptor.model]: nonEmpty(
-        env[`${prefix}_ANCHOR_PATH`],
-        descriptor.model === MODEL_PRO ? env.GATEWAY_ANCHOR_PATH : '',
-        descriptor.defaultAnchorPath,
-      ),
+      [descriptor.model]: plane?.anchorPath ?? descriptorAnchorPath(env, descriptor),
     },
     logDir: nonEmpty(env[`${prefix}_LOG_DIR`], join(sharedLogRoot, descriptor.name)),
     ...sharedOptions(env),
@@ -176,18 +254,19 @@ export function gatewayRuntimeProfiles(env = process.env) {
 }
 
 export function gatewayCombinedProfile(env = process.env) {
-  const combined = singleProfile({
-    ...env,
-    GATEWAY_MODELS: env.GATEWAY_COMBINED_MODELS ?? [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
-    GATEWAY_HOST: env.GATEWAY_COMBINED_HOST ?? env.GATEWAY_HOST ?? '127.0.0.1',
-    GATEWAY_PORT: env.GATEWAY_COMBINED_PORT ?? '8646',
-    GATEWAY_ENHANCEMENT_MODE: env.GATEWAY_COMBINED_ENHANCEMENT_MODE ?? 'bypass',
-    GATEWAY_LOG_DIR: env.GATEWAY_COMBINED_LOG_DIR ?? join(
+  return multiModelListenerProfile(env, {
+    name: 'combined',
+    host: env.GATEWAY_COMBINED_HOST ?? env.GATEWAY_HOST ?? '127.0.0.1',
+    port: port(env.GATEWAY_COMBINED_PORT, 8646, 'GATEWAY_COMBINED_PORT'),
+    models: parseModelList(
+      env.GATEWAY_COMBINED_MODELS,
+      [MODEL_PRO, MODEL_FLASH, MODEL_VISION].join(','),
+    ),
+    logDir: env.GATEWAY_COMBINED_LOG_DIR ?? join(
       env.GATEWAY_LOG_DIR ?? join(process.cwd(), 'results', 'gateway'),
       'combined',
     ),
   })
-  return { ...combined, name: 'combined' }
 }
 
 export function validateGatewayDeployment(env = process.env) {

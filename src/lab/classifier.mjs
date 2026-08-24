@@ -1,62 +1,70 @@
-function occurrences(text, pattern) {
+import { cotStyleFromCounts } from '../gateway/trajectory-stats.mjs'
+
+function countMatches(text, pattern) {
+  pattern.lastIndex = 0
   return [...text.matchAll(pattern)].length
 }
 
+// Aligned with COT_MARKER_PROFILE v3 in src/gateway/trajectory-stats.mjs:
+// a single "I'm xxxing" / 我正在 marks the gray-test chain of thought;
+// collective we-need / let's wording with little "let me" marks the formal
+// strong (Minimal) CoT; a large amount of "let me" marks the formal weak
+// (let me) CoT.
 export function classifyTrajectory(reasoning, visibleBeforeTool = false) {
   const text = String(reasoning ?? '').trim()
   const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
+  const markers = {
+    imIng: countMatches(text, /\bi['\u2019]m\s+[a-z]+ing\b/gi),
+    imIngZh: countMatches(text, /我正在/g),
+    weNeed: countMatches(text, /\bwe\s+need\b/gi),
+    weNeedZh: countMatches(text, /我们需要/g),
+    lets: countMatches(text, /\blet['\u2019]s\b/gi),
+    letsZh: countMatches(text, /让我们/g),
+    letMe: countMatches(text, /\blet\s+me\b/gi),
+    letMeZh: countMatches(text, /让我(?!们)/g),
+  }
   const metrics = {
     firstLine,
     chars: text.length,
-    we: occurrences(text, /\bwe\b/gi),
-    letMe: occurrences(text, /\blet me\b/gi),
-    i: occurrences(text, /\bi\b/gi),
+    ...markers,
     markerFirstLine: /^(good|great|excellent)\.?$/i.test(firstLine.trim()),
     visibleBeforeTool: Boolean(visibleBeforeTool),
   }
 
-  let score = 0
-  if (/^we need\b/i.test(firstLine)) score += 3
-  if (/^let me\b/i.test(firstLine)) score -= 3
-  if (/^the user wants\b/i.test(firstLine)) score -= 3
-  if (/^i (need|should|will)\b/i.test(firstLine)) score -= 3
-  if (metrics.we > 0 && metrics.letMe === 0) score += 2
-  if (metrics.letMe > 0) score -= 2
-  if (metrics.markerFirstLine) score += 1
-  if (metrics.visibleBeforeTool) score -= 1
-
+  const cot = cotStyleFromCounts(markers)
   return {
-    label: score >= 4 ? 'minimal-like' : score <= -4 ? 'standard-like' : 'ambiguous',
-    score,
+    label: cot.label,
+    counts: cot.counts,
     metrics,
   }
 }
 
 export function summarizeRuns(runs) {
   const labels = runs.map((run) => run.classification.label)
-  const minimalLikeRuns = labels.filter((label) => label === 'minimal-like').length
-  const standardLikeRuns = labels.filter((label) => label === 'standard-like').length
-  const ambiguousRuns = labels.filter((label) => label === 'ambiguous').length
+  const minimalRuns = labels.filter((label) => label === 'minimal').length
+  const letMeRuns = labels.filter((label) => label === 'let-me').length
+  const mixedRuns = labels.filter((label) => label === 'mixed').length
   const letMeTotal = runs.reduce(
-    (sum, run) => sum + run.classification.metrics.letMe,
+    (sum, run) =>
+      sum + run.classification.metrics.letMe + run.classification.metrics.letMeZh,
     0,
   )
   const toolCallRuns = runs.filter((run) => run.toolNames.length > 0).length
 
   return {
     diagnosticOnly: true,
-    stableMinimalLike:
+    stableMinimal:
       runs.length > 0 &&
-      minimalLikeRuns === runs.length &&
+      minimalRuns === runs.length &&
       letMeTotal === 0 &&
       toolCallRuns === runs.length,
-    stableStandardLike:
+    stableLetMe:
       runs.length > 0 &&
-      standardLikeRuns === runs.length &&
+      letMeRuns === runs.length &&
       toolCallRuns === runs.length,
-    minimalLikeRuns,
-    standardLikeRuns,
-    ambiguousRuns,
+    minimalRuns,
+    letMeRuns,
+    mixedRuns,
     toolCallRuns,
     totalRuns: runs.length,
     letMeTotal,
@@ -68,11 +76,11 @@ export function compareArms(dshMinimalRuns, controlRuns) {
   const standardControl = summarizeRuns(controlRuns)
 
   let verdict = 'inconclusive'
-  if (!dshMinimal.stableMinimalLike) {
+  if (!dshMinimal.stableMinimal) {
     verdict = 'dsh-minimal-not-reproduced'
-  } else if (standardControl.stableStandardLike) {
-    verdict = 'strict-trajectory-shift-observed'
-  } else if (standardControl.stableMinimalLike) {
+  } else if (standardControl.stableLetMe) {
+    verdict = 'strict-cot-shift-observed'
+  } else if (standardControl.stableMinimal) {
     verdict = 'no-arm-separation'
   } else {
     verdict = 'mixed-control-results'
@@ -81,8 +89,7 @@ export function compareArms(dshMinimalRuns, controlRuns) {
   return {
     diagnosticOnly: true,
     verdict,
-    strictTrajectoryShiftObserved:
-      dshMinimal.stableMinimalLike && standardControl.stableStandardLike,
+    strictCotShiftObserved: dshMinimal.stableMinimal && standardControl.stableLetMe,
     dshMinimal,
     standardControl,
   }

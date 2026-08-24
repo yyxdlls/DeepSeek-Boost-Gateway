@@ -411,6 +411,13 @@ h1 {
   font-size: clamp(19px, 2.1vw, 26px);
   line-height: 1.25;
   letter-spacing: 0.01em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 运行模式卡占两条轨道，中文部署名不被 172px 格子挤压；窄屏拆回单列。 */
+.metric-card.metric-mode-card {
+  grid-column: span 2;
 }
 
 .metric-card small {
@@ -443,6 +450,7 @@ h1 {
 .detail-panel,
 .anchors-panel,
 .config-panel,
+.micro-anchor-panel,
 .profiles-panel {
   padding: 22px;
 }
@@ -517,7 +525,7 @@ h1 {
 
 .filters {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 148px;
+  grid-template-columns: minmax(180px, 1fr) 148px 176px;
   gap: 9px;
   margin: 20px 0 14px;
 }
@@ -719,6 +727,20 @@ h1 {
 .status-label.error { color: var(--red); }
 .mode-label.anchor { color: var(--cyan); }
 .mode-label.cache { color: var(--green); }
+
+/* 纯工具调用：本次新增输入全部是工具结果，没有新的用户消息。 */
+.tool-only-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 196, 87, 0.32);
+  border-radius: 999px;
+  color: var(--amber);
+  white-space: nowrap;
+  background: rgba(255, 196, 87, 0.07);
+  font-size: 15px;
+}
 
 .tool-sequence {
   display: flex;
@@ -1069,6 +1091,11 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.basic-stat-value {
+  min-width: 0;
+  margin-top: 5px;
+}
+
 .candidate-facts-note {
   margin: 8px 0 0;
   color: var(--faint);
@@ -1142,7 +1169,7 @@ h1 {
   white-space: nowrap;
 }
 
-/* 开头四词/四字 总览: 独占整行, 不截断。 */
+/* 开头节选: 独占整行, 不截断。 */
 .mini-metric.wide {
   grid-column: 1 / -1;
 }
@@ -1152,6 +1179,57 @@ h1 {
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+/* ---------- A: 上下文占用高亮（独立强调，不混进 basic-stat 小卡） ---------- */
+.context-occupancy {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(85, 228, 220, 0.3);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(85, 228, 220, 0.09), rgba(85, 228, 220, 0.02));
+}
+
+.context-occupancy-main {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.context-occupancy-main strong {
+  color: var(--cyan);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 30px;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.context-occupancy-main span,
+.context-occupancy-side {
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.context-occupancy-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.context-occupancy-note {
+  color: var(--amber);
+}
+
+.context-occupancy-cot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--faint);
+  font-size: 14.5px;
 }
 
 .subheading {
@@ -2225,6 +2303,10 @@ footer span {
     grid-template-columns: 1fr;
   }
 
+  .metric-card.metric-mode-card {
+    grid-column: auto;
+  }
+
   .requests-panel,
   .detail-panel,
   .anchors-panel,
@@ -2232,6 +2314,7 @@ footer span {
     padding: 17px;
   }
 
+  .micro-anchor-panel,
   .profiles-panel {
     padding: 17px;
   }
@@ -2282,4 +2365,643 @@ footer span {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------- A1: cache pill 三态 ----------
+   语义映射：未返回 / 0 命中 / 有效命中。
+   默认样式（amber）表示「0」；.good 表示有效命中；.none 表示未返回。 */
+.cache-pill {
+  align-self: center;
+}
+
+.cache-pill.none {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+/* ---------- A1: help icon & tooltip（hover + 键盘 focus） ---------- */
+.help-icon {
+  position: relative;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  margin-left: 6px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: -3px;
+  cursor: help;
+}
+
+.help-icon:hover,
+.help-icon:focus-visible {
+  color: var(--cyan);
+  border-color: rgba(85, 228, 220, 0.45);
+  background: rgba(85, 228, 220, 0.08);
+}
+
+.help-icon .help-tooltip {
+  position: absolute;
+  z-index: 40;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: 300px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--text);
+  background: #172126;
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.55;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.help-icon:hover .help-tooltip,
+.help-icon:focus-visible .help-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* 滚动容器内已把 tooltip 挂到 document.body（fixed），隐藏原地副本。 */
+.help-icon.help-tooltip-detached .help-tooltip {
+  display: none;
+}
+
+/* ---------- A1: conversation section（思维链 / 正文 / 工具调用） ---------- */
+.conversation-section {
+  display: grid;
+  gap: 5px;
+}
+
+.conversation-section + .conversation-section {
+  margin-top: 2px;
+}
+
+/* 每条消息「查看完整消息」：details/summary 免脚本展开完整文本，
+   对付 200 字参数预览截断与保存时的正文截断。 */
+.message-full-details {
+  margin-top: 4px;
+}
+
+.message-full-button {
+  display: inline-flex;
+  width: max-content;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.message-full-button::-webkit-details-marker {
+  display: none;
+}
+
+.message-full-button:hover,
+.message-full-details[open] .message-full-button {
+  color: var(--cyan);
+  border-color: rgba(85, 228, 220, 0.4);
+}
+
+.message-full-body {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: rgba(6, 10, 12, 0.35);
+}
+
+.message-full-label {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.message-full-label:not(:first-child) {
+  margin-top: 4px;
+}
+
+.conversation-section-label {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ---------- A1: 工具调用块与 call id 引用 ---------- */
+.tool-call-list {
+  display: grid;
+  gap: 5px;
+}
+
+.tool-call {
+  display: grid;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(85, 228, 220, 0.035);
+}
+
+.tool-call-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-call-head b {
+  color: var(--text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+
+.tool-call-head code {
+  color: var(--faint);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.tool-call-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tool-call-ref {
+  color: var(--cyan);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.tool-call-ref code {
+  color: inherit;
+  font-size: 11.5px;
+}
+
+.conversation-item.final {
+  border-color: rgba(167, 235, 133, 0.3);
+}
+
+/* ---------- A1: cat -n 紧凑行号列 + 正文列 ---------- */
+.catn-table {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(6, 10, 12, 0.35);
+}
+
+.catn-no {
+  padding: 0 10px;
+  color: var(--faint);
+  border-right: 1px solid var(--line);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.catn-text {
+  padding: 0 10px;
+  color: var(--text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.catn-plain {
+  grid-column: 1 / -1;
+  padding: 0 10px;
+  color: var(--text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- A1: 对话弹窗 role legend ---------- */
+.role-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 22px 0;
+}
+
+.role-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.role-legend-item code {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.legend-user {
+  color: var(--amber);
+}
+
+.legend-assistant {
+  color: var(--violet);
+}
+
+.legend-tool {
+  color: var(--cyan);
+}
+
+/* ---------- B2: Builder 目标模型旁的示例 Anchor 按钮 ---------- */
+.anchor-form label.target-config-label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.anchor-example-button {
+  min-height: 24px;
+  padding: 2px 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.anchor-example-button:disabled {
+  color: var(--faint);
+  border-color: var(--line);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* ---------- B2: 选用并保存命名 dialog ---------- */
+.select-dialog {
+  width: min(480px, calc(100% - 28px));
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: #121a1e;
+  box-shadow: 0 34px 120px rgba(0, 0, 0, 0.65);
+}
+
+.select-dialog::backdrop {
+  background: rgba(2, 6, 8, 0.76);
+  backdrop-filter: blur(6px);
+}
+
+.select-dialog form {
+  padding: 22px;
+}
+
+.select-dialog .select-note {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.select-dialog .select-hint {
+  margin: 0 0 14px;
+  color: var(--faint);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.select-dialog .select-error {
+  margin: 12px 0 0;
+}
+
+/* ---------- B2: 保存/已保存后的任务卡操作 ---------- */
+.job-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.job-row-actions .button.primary {
+  min-height: 28px;
+  padding: 3px 12px;
+  font-size: 13.5px;
+}
+
+/* ---------- D: 微锚点独立管理 panel ---------- */
+.micro-anchor-panel {
+  margin-top: 12px;
+}
+
+.micro-anchor-warning {
+  margin: 14px 0 0;
+  padding: 11px 13px;
+  border: 1px solid rgba(255, 203, 113, 0.32);
+  border-radius: 10px;
+  color: var(--amber);
+  background: rgba(255, 203, 113, 0.06);
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.micro-anchor-apply-note {
+  margin: 10px 0 0;
+  color: var(--green);
+  font-size: 14px;
+}
+
+.micro-anchor-definitions {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.micro-anchor-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.micro-anchor-card.builtin {
+  border-color: rgba(85, 228, 220, 0.26);
+  background: rgba(85, 228, 220, 0.035);
+}
+
+.micro-anchor-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.micro-anchor-card-head strong {
+  font-size: 17px;
+}
+
+.micro-anchor-content,
+.micro-anchor-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  background: rgba(6, 10, 12, 0.35);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.micro-anchor-preview {
+  max-height: 150px;
+  overflow: auto;
+}
+
+.micro-anchor-preview-more {
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.micro-anchor-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.micro-anchor-card-meta b {
+  color: var(--cyan);
+  font-weight: 650;
+}
+
+.micro-anchor-fingerprint {
+  color: var(--muted);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.micro-anchor-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.micro-anchor-card-actions .button {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 14px;
+}
+
+.micro-anchor-profiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.micro-anchor-profile {
+  display: grid;
+  gap: 9px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.micro-anchor-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.micro-anchor-profile-head strong {
+  font-size: 16.5px;
+}
+
+.micro-anchor-profile label {
+  display: grid;
+  gap: 6px;
+  color: var(--faint);
+  font-size: 13.5px;
+}
+
+.micro-anchor-profile select,
+.micro-anchor-content-field textarea,
+.micro-anchor-dialog form .token-field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.micro-anchor-content-field textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.micro-anchor-profile .button {
+  justify-self: end;
+  margin-top: 2px;
+}
+
+.micro-anchor-effective {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 13.5px;
+}
+
+.micro-anchor-effective code {
+  color: var(--muted);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.micro-anchor-effective code.muted {
+  color: var(--faint);
+}
+
+.micro-anchor-state {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--green);
+  border-color: rgba(167, 235, 133, 0.22);
+  background: rgba(167, 235, 133, 0.05);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.micro-anchor-state.pending {
+  color: var(--amber);
+  border-color: rgba(255, 203, 113, 0.24);
+  background: rgba(255, 203, 113, 0.05);
+}
+
+/* ---------- D: 微锚点编辑 / 只读查看 dialog ---------- */
+.micro-anchor-dialog {
+  width: min(560px, calc(100% - 28px));
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: #121a1e;
+  box-shadow: 0 34px 120px rgba(0, 0, 0, 0.65);
+}
+
+.micro-anchor-dialog::backdrop {
+  background: rgba(2, 6, 8, 0.76);
+  backdrop-filter: blur(6px);
+}
+
+.micro-anchor-dialog form {
+  padding: 22px;
+}
+
+.micro-anchor-dialog .dialog-heading {
+  padding: 0;
+}
+
+.micro-anchor-dialog .dialog-heading + .micro-anchor-dialog-note {
+  margin-top: 0;
+}
+
+.micro-anchor-dialog-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.micro-anchor-dialog form .token-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  color: var(--faint);
+  font-size: 13.5px;
+}
+
+.micro-anchor-dialog form .micro-anchor-content-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--faint);
+  font-size: 13.5px;
+}
+
+.micro-anchor-dialog .micro-anchor-content-field[hidden],
+.micro-anchor-dialog form .token-field[hidden] {
+  display: none;
+}
+
+.micro-anchor-dialog .dialog-actions {
+  margin-top: 16px;
+}
+
+#micro-anchor-view-body {
+  padding: 0 22px 22px;
+}
+
+#micro-anchor-view-body .fact-list {
+  margin-top: 14px;
+}
+
+#micro-anchor-view-body .subheading {
+  margin-top: 16px;
+}
+
+#micro-anchor-view-body .micro-anchor-content {
+  max-height: 320px;
+  overflow: auto;
 }

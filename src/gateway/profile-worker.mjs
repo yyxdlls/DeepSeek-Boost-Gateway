@@ -4,8 +4,65 @@ import { startGatewayProfile } from './gateway-instance.mjs'
 let server = null
 let shuttingDown = false
 
+function logSendFailure(message, error) {
+  process.stderr.write(`${JSON.stringify({
+    event: 'gateway-ipc-send-failed',
+    type: message?.type ?? null,
+    requestId: message?.entry?.requestId ?? null,
+    message: error?.message ?? String(error),
+  })}\n`)
+}
+
+// Oversized diagnostic entries cannot cross the IPC channel; retry with only
+// the current input tail and message counts so the parent list still holds the
+// requestId. The full body remains in the child's own diagnostics store.
+function slimDiagnosticMessage(message) {
+  if (message?.type !== 'diagnostic') return null
+  const entry = message.entry ?? {}
+  const messages = entry.messages ?? {}
+  return {
+    ...message,
+    entry: {
+      ...entry,
+      messages: {
+        request: null,
+        response: null,
+        currentInput: Array.isArray(messages.currentInput)
+          ? messages.currentInput
+          : null,
+        requestMessageCount: Array.isArray(messages.request) ? messages.request.length : null,
+        responseMessageCount: Array.isArray(messages.response) ? messages.response.length : null,
+      },
+    },
+  }
+}
+
+function sendIpc(message) {
+  if (!process.connected) return false
+  const sent = process.send(message)
+  if (sent === false) throw new Error('IPC channel is closed.')
+  return true
+}
+
 function reply(message) {
-  if (process.connected) process.send(message)
+  try {
+    sendIpc(message)
+    return
+  } catch (error) {
+    logSendFailure(message, error)
+  }
+  const slim = slimDiagnosticMessage(message)
+  if (!slim) return
+  try {
+    sendIpc(slim)
+    process.stderr.write(`${JSON.stringify({
+      event: 'gateway-ipc-send-slimmed',
+      type: message?.type ?? null,
+      requestId: message?.entry?.requestId ?? null,
+    })}\n`)
+  } catch (retryError) {
+    logSendFailure(slim, retryError)
+  }
 }
 
 async function shutdown() {

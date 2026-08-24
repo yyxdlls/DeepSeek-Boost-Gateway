@@ -65,11 +65,18 @@ function openingStyle(text) {
   return 'other'
 }
 
+// Opening preview keeps the first sentence (up to and including the first
+// sentence separator), or the first 40 code points when the text has no
+// separator. Both English and Chinese count code points, so the preview is
+// neither four words nor four characters.
+const OPENING_SENTENCE_SEPARATORS = /[。．.！!？?]/u
+
 function cotOpeningPreview(text) {
   const trimmed = text.trimStart().replace(/\s+/gu, ' ')
   if (!trimmed) return ''
-  if (/^\p{Script=Han}/u.test(trimmed)) return [...trimmed].slice(0, 4).join('')
-  return trimmed.split(' ').slice(0, 4).join(' ')
+  const end = trimmed.search(OPENING_SENTENCE_SEPARATORS)
+  if (end !== -1) return trimmed.slice(0, end + 1)
+  return [...trimmed].slice(0, 40).join('')
 }
 
 export const openingPreview = cotOpeningPreview
@@ -286,7 +293,10 @@ export function summarizeTokenUsage(usage) {
     usage.reasoning_tokens,
   )
   const cache = summarizeCacheUsage(usage)
+  const total = firstNumber(usage.total_tokens)
+    ?? (input !== null && output !== null ? input + output : null)
   return {
+    total,
     input,
     output,
     reasoning,

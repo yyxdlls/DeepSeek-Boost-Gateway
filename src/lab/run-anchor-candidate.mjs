@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, mkdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   ANCHOR_ID,
   ANCHOR_TASK,
@@ -24,6 +25,17 @@ import {
   makeChatCompletionsUrl,
   toolsForArm,
 } from './profile.mjs'
+import { accumulateAssistantMessages, DeltaThrottler } from './assistant-stream.mjs'
+import { loadAnchorArtifact } from '../gateway/anchor.mjs'
+import { normalizeAnchorDisplayName } from '../gateway/anchor-manifest.mjs'
+import {
+  assertCandidateReportedModels,
+  assertSubturnReportedModel,
+  attachCandidateSetFingerprint,
+  fixtureFingerprint,
+  plannedResultsPath,
+  validateResultsForFreeze,
+} from './anchor-generation-gates.mjs'
 
 function anchorSpec(openWorkstream) {
   return openWorkstream
@@ -54,6 +66,14 @@ function positiveInteger(value, fallback, name) {
   return parsed
 }
 
+function reasoningEffort(value = DEFAULT_PROFILE.reasoningEffort) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!['low', 'high', 'max'].includes(normalized)) {
+    throw new Error('DEEPSEEK_REASONING_EFFORT must be low, high, or max.')
+  }
+  return normalized
+}
+
 function configurationFromEnvironment(environment = process.env) {
   return {
     apiKey: environment.DEEPSEEK_API_KEY?.trim(),
@@ -75,6 +95,7 @@ function configurationFromEnvironment(environment = process.env) {
       DEFAULT_PROFILE.maxTokens,
       'ANCHOR_MAX_TOKENS',
     ),
+    reasoningEffort: reasoningEffort(environment.DEEPSEEK_REASONING_EFFORT),
   }
 }
 
@@ -91,11 +112,16 @@ function requestFor(configuration, messages) {
   const initial = buildInitialAnchorRequest({
     model: configuration.model,
     maxTokens: configuration.maxTokens,
+    reasoningEffort: configuration.reasoningEffort,
     userPrompt: configuration.anchor.task,
   })
   return {
     ...initial,
     messages: structuredClone(messages),
+    // Streaming keeps the builder aware of partial output in real time; the
+    // usage summary still arrives through the include_usage terminal chunk.
+    stream: true,
+    stream_options: { include_usage: true },
   }
 }
 
@@ -109,7 +135,7 @@ function addUsage(total, usage) {
   total.cacheMissTokens += usage.prompt_cache_miss_tokens ?? 0
 }
 
-async function requestAssistant(configuration, request, label) {
+async function requestAssistant(configuration, request, label, onDelta) {
   const response = await fetch(configuration.endpoint, {
     method: 'POST',
     headers: {
@@ -124,13 +150,26 @@ async function requestAssistant(configuration, request, label) {
     const body = safeErrorBody(await response.text(), configuration.apiKey)
     throw new Error(`${label}: upstream HTTP ${response.status}: ${body}`)
   }
+  if (!response.body) {
+    throw new Error(`${label}: upstream response has no stream body.`)
+  }
 
-  const payload = await response.json()
-  const message = payload.choices?.[0]?.message
+  const { message, finishReason, usage, model, systemFingerprint } =
+    await accumulateAssistantMessages(response.body, {
+      onDelta: onDelta ? (phase, text) => onDelta(phase, text) : undefined,
+    })
   if (!message || typeof message !== 'object') {
     throw new Error(`${label}: response has no assistant message.`)
   }
-  return { payload, message }
+  return {
+    payload: {
+      choices: [{ index: 0, message, finish_reason: finishReason }],
+      usage: usage ?? undefined,
+      model: model ?? undefined,
+      system_fingerprint: systemFingerprint ?? undefined,
+    },
+    message,
+  }
 }
 
 async function runCandidate(configuration, candidateIndex) {
@@ -138,6 +177,7 @@ async function runCandidate(configuration, candidateIndex) {
     model: configuration.model,
     maxTokens: configuration.maxTokens,
     userPrompt: configuration.anchor.task,
+    reasoningEffort: configuration.reasoningEffort,
   })
   const candidate = {
     candidateIndex,
@@ -155,23 +195,51 @@ async function runCandidate(configuration, candidateIndex) {
     },
     finalAnswer: '',
     stopReason: 'turn-limit',
+    requestedModel: configuration.model,
     model: null,
     systemFingerprint: null,
+    reportedModels: [],
   }
   let bashCompleted = false
 
   for (let subturn = 1; subturn <= configuration.maxSubturns; subturn += 1) {
     const request = requestFor(configuration, messages)
     candidate.requestFingerprints.push(fingerprint(request))
+    let streamedReasoningChars = 0
+    let streamedContentChars = 0
+    const emitDelta = (phase, text) => {
+      if (phase === 'reasoning') streamedReasoningChars += text.length
+      else streamedContentChars += text.length
+      process.stdout.write(`${JSON.stringify({
+        type: 'delta',
+        candidate: candidateIndex,
+        subturn,
+        phase,
+        text,
+        reasoningChars: streamedReasoningChars,
+        contentChars: streamedContentChars,
+      })}\n`)
+    }
+    const throttler = new DeltaThrottler(emitDelta)
     const { payload, message } = await requestAssistant(
       configuration,
       request,
       `candidate ${candidateIndex} subturn ${subturn}`,
+      (phase, text) => throttler.push(phase, text),
     )
+    throttler.flush()
     addUsage(candidate.usage, payload.usage)
-    candidate.model = payload.model ?? candidate.model
+    const reportedModel = payload.model ?? null
+    const reportedFingerprint = payload.system_fingerprint ?? null
+    assertSubturnReportedModel(configuration.model, reportedModel)
+    candidate.reportedModels.push({
+      subturn,
+      model: reportedModel,
+      systemFingerprint: reportedFingerprint,
+    })
+    candidate.model = reportedModel ?? candidate.model
     candidate.systemFingerprint =
-      payload.system_fingerprint ?? candidate.systemFingerprint
+      reportedFingerprint ?? candidate.systemFingerprint
 
     const normalized = normalizeAssistantMessage(message)
     messages.push(normalized)
@@ -185,16 +253,21 @@ async function runCandidate(configuration, candidateIndex) {
       toolNames: toolCalls
         .map((call) => call.function?.name)
         .filter(Boolean),
+      reportedModel,
+      systemFingerprint: reportedFingerprint,
     }
     candidate.assistantTurns.push(turn)
     process.stdout.write(`${JSON.stringify({
+      type: 'subturn',
       candidate: candidateIndex,
       subturn,
       firstLine: String(reasoning).trim().split(/\r?\n/, 1)[0] ?? '',
       toolNames: turn.toolNames,
       hasVisibleContent: Boolean(String(turn.content ?? '').trim()),
       finishReason: turn.finishReason,
-    }, null, 2)}\n`)
+      usage: candidate.usage,
+      totalToolCalls: candidate.toolEvents.length + toolCalls.length,
+    })}\n`)
 
     if (toolCalls.length === 0) {
       candidate.finalAnswer = normalized.content
@@ -225,29 +298,17 @@ async function runCandidate(configuration, candidateIndex) {
       }
     }
     if (bashAcceptedThisSubturn) bashCompleted = true
-    if (
-      configuration.anchor.openWorkstream &&
-      candidate.toolEvents.length === 2 &&
-      candidate.toolEvents.every((event) => event.accepted) &&
-      candidate.toolEvents[0].name === 'bash' &&
-      candidate.toolEvents[1].name === 'str_replace_editor'
-    ) {
-      candidate.stopReason = 'open-after-second-tool-result'
-      break
-    }
   }
 
+  assertCandidateReportedModels(configuration.model, candidate.reportedModels)
   candidate.evaluation = configuration.anchor.openWorkstream
     ? evaluateOpenWorkstreamCandidate(candidate)
     : evaluateAnchorCandidate(candidate)
   return candidate
 }
 
-function reasoningChars(candidate) {
-  return candidate.assistantTurns.reduce(
-    (sum, turn) => sum + String(turn.reasoning ?? '').length,
-    0,
-  )
+function totalTokensOf(candidate) {
+  return Number(candidate?.usage?.totalTokens ?? 0)
 }
 
 function selectBestCandidate(candidates, openWorkstream) {
@@ -256,20 +317,22 @@ function selectBestCandidate(candidates, openWorkstream) {
     .sort(
       openWorkstream
         ? (left, right) =>
-            reasoningChars(right) - reasoningChars(left) ||
+            totalTokensOf(right) - totalTokensOf(left) ||
             left.candidateIndex - right.candidateIndex
         : (left, right) =>
             left.evaluation.totalToolCalls - right.evaluation.totalToolCalls ||
-            left.usage.totalTokens - right.usage.totalTokens ||
+            totalTokensOf(left) - totalTokensOf(right) ||
             left.candidateIndex - right.candidateIndex,
     )[0]
 }
 
 function buildArtifact(configuration, selected, createdAt) {
+  const displayName = normalizeAnchorDisplayName(configuration.anchor.displayName)
   const core = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'deepseek-v4-anchor-artifact',
     id: configuration.anchor.id,
+    displayName,
     createdAt,
     source: {
       endpoint: configuration.endpoint,
@@ -278,7 +341,7 @@ function buildArtifact(configuration, selected, createdAt) {
       systemFingerprint: selected.systemFingerprint,
       requestSettings: {
         thinking: structuredClone(DEFAULT_PROFILE.thinking),
-        reasoningEffort: DEFAULT_PROFILE.reasoningEffort,
+        reasoningEffort: configuration.reasoningEffort,
         maxTokens: configuration.maxTokens,
       },
     },
@@ -319,11 +382,124 @@ async function pathExists(path) {
   }
 }
 
+function parseFlagValue(argv, flag) {
+  const index = argv.indexOf(flag)
+  if (index === -1) return undefined
+  const value = argv[index + 1]
+  if (value === undefined || value.startsWith('--')) {
+    throw new Error(`${flag} requires a value.`)
+  }
+  return value
+}
+
+export async function freezeFromResults(resultsPath, candidateArgument, plannedArtifactPath) {
+  const stored = JSON.parse(await readFile(resolve(resultsPath), 'utf8'))
+  if (!stored || !Array.isArray(stored.candidates) || stored.candidates.length === 0) {
+    throw new Error(`Results file has no candidates: ${resultsPath}`)
+  }
+  const candidateIndex = Number.parseInt(candidateArgument, 10)
+  if (!Number.isSafeInteger(candidateIndex) || candidateIndex < 1) {
+    throw new Error('--candidate must be a positive integer candidate index.')
+  }
+  const selected = stored.candidates.find(
+    (candidate) => candidate.candidateIndex === candidateIndex,
+  )
+  if (!selected) {
+    throw new Error(
+      `Candidate ${candidateIndex} was not found in ${resultsPath}. Available: ${stored.candidates.map((candidate) => candidate.candidateIndex).join(', ')}.`,
+    )
+  }
+  validateResultsForFreeze(stored, selected, {
+    expectedModel: process.env.DEEPSEEK_MODEL?.trim() || stored.requestedModel || stored.model,
+    expectedFixtureId: process.env.ANCHOR_EXPECTED_FIXTURE_ID?.trim() || undefined,
+    expectedFixtureFingerprint: process.env.ANCHOR_EXPECTED_FIXTURE_FINGERPRINT?.trim() || undefined,
+    expectedCandidateSetFingerprint: process.env.ANCHOR_EXPECTED_CANDIDATE_SET_FINGERPRINT?.trim() || undefined,
+  })
+  const openWorkstream = Boolean(stored.anchor?.openWorkstream)
+  const anchor = anchorSpec(openWorkstream)
+  anchor.task = String(stored.anchor?.task ?? anchor.task).trim() || anchor.task
+  const configuration = {
+    apiKey: null,
+    baseUrl: stored.endpoint,
+    endpoint: stored.endpoint,
+    model: stored.requestedModel ?? stored.model,
+    runs: stored.candidates.length,
+    maxSubturns: 0,
+    timeoutMs: 0,
+    maxTokens: positiveInteger(stored.anchor?.maxTokens, DEFAULT_PROFILE.maxTokens, 'anchor.maxTokens'),
+    reasoningEffort: reasoningEffort(stored.anchor?.reasoningEffort),
+    anchor,
+  }
+  anchor.continuationMessage = String(
+    stored.anchor?.continuationMessage ?? anchor.continuationMessage ?? '',
+  ).trim() || null
+  anchor.displayName = normalizeAnchorDisplayName(process.env.ANCHOR_DISPLAY_NAME)
+  const configuredId = process.env.ANCHOR_ARTIFACT_ID?.trim()
+  if (configuredId) anchor.id = configuredId
+  const artifact = buildArtifact(configuration, selected, new Date().toISOString())
+  await mkdir(dirname(plannedArtifactPath), { recursive: true })
+  await writeFile(plannedArtifactPath, `${JSON.stringify(artifact, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  })
+  const loaded = await loadAnchorArtifact(plannedArtifactPath)
+  if (configuredId && loaded.id !== configuredId) {
+    throw new Error(
+      `Frozen artifact id ${loaded.id} does not match ANCHOR_ARTIFACT_ID ${configuredId}.`,
+    )
+  }
+  if (loaded.artifact.displayName !== anchor.displayName) {
+    throw new Error('Frozen artifact displayName does not match ANCHOR_DISPLAY_NAME.')
+  }
+  process.stdout.write(`${JSON.stringify({
+    type: 'frozen',
+    paidRequestsSent: 0,
+    frozenFromResults: resolve(resultsPath),
+    selectedCandidate: selected.candidateIndex,
+    frozenArtifact: plannedArtifactPath,
+    artifactId: artifact.id,
+    artifactFingerprint: artifact.artifactFingerprint,
+  })}\n`)
+}
+
 async function main() {
+  const fromResults = parseFlagValue(process.argv, '--from-results')
+  if (fromResults) {
+    const candidateArgument = parseFlagValue(process.argv, '--candidate')
+    if (!candidateArgument) throw new Error('--from-results requires --candidate.')
+    const freezeArtifactId = process.env.ANCHOR_ARTIFACT_ID?.trim()
+    if (freezeArtifactId && !/^[a-z0-9][a-z0-9._-]*$/i.test(freezeArtifactId)) {
+      throw new Error('ANCHOR_ARTIFACT_ID may contain only letters, digits, dot, underscore, and hyphen.')
+    }
+    const freezePath = process.env.ANCHOR_OUTPUT_PATH?.trim() ||
+      (freezeArtifactId ? resolve('anchors', `${freezeArtifactId}.json`) : null)
+    if (!freezePath) {
+      throw new Error('--from-results requires ANCHOR_OUTPUT_PATH or ANCHOR_ARTIFACT_ID.')
+    }
+    const freezeArtifactPath = resolve(freezePath)
+    if (await pathExists(freezeArtifactPath)) {
+      throw new Error(
+        `Refusing to overwrite immutable anchor: ${freezeArtifactPath}`,
+      )
+    }
+    await freezeFromResults(fromResults, candidateArgument, freezeArtifactPath)
+    return
+  }
+
   const configuration = configurationFromEnvironment()
   configuration.anchor = anchorSpec(process.argv.includes('--open-workstream'))
   const configuredUserPrompt = process.env.ANCHOR_USER_PROMPT?.trim()
   if (configuredUserPrompt) configuration.anchor.task = configuredUserPrompt
+  if (process.env.ANCHOR_CONTINUATION_MESSAGE !== undefined) {
+    configuration.anchor.continuationMessage =
+      process.env.ANCHOR_CONTINUATION_MESSAGE.trim() || null
+  }
+  if (process.env.ANCHOR_DISPLAY_NAME !== undefined) {
+    configuration.anchor.displayName = normalizeAnchorDisplayName(
+      process.env.ANCHOR_DISPLAY_NAME,
+    )
+  }
   const configuredArtifactId = process.env.ANCHOR_ARTIFACT_ID?.trim()
   if (configuredArtifactId) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(configuredArtifactId)) {
@@ -344,11 +520,19 @@ async function main() {
     const request = buildInitialAnchorRequest({
       model: configuration.model,
       maxTokens: configuration.maxTokens,
+      reasoningEffort: configuration.reasoningEffort,
       userPrompt: configuration.anchor.task,
     })
+    const resultsPath = resolve(plannedResultsPath(configuration))
     process.stdout.write(`${JSON.stringify({
       dryRun: true,
       paidRequestsSent: 0,
+      model: configuration.model,
+      fixtureId: configuration.anchor.fixture.fixtureId ?? null,
+      fixtureFingerprint: configuration.anchor.fixture.fingerprint
+        ?? fixtureFingerprint(configuration.anchor.fixture),
+      resultsPath,
+      maximumUpstreamCalls: configuration.runs * configuration.maxSubturns,
       anchorId: configuration.anchor.id,
       targetArtifactPath: plannedArtifactPath,
       plannedCandidates: configuration.runs,
@@ -379,6 +563,7 @@ async function main() {
     const candidate = await runCandidate(configuration, index)
     candidates.push(candidate)
     process.stdout.write(`${JSON.stringify({
+      type: 'candidate',
       candidate: index,
       eligible: candidate.evaluation.eligible,
       eligibilityBasis: candidate.evaluation.eligibilityBasis,
@@ -388,7 +573,7 @@ async function main() {
       acceptedToolSequence: candidate.evaluation.acceptedToolSequence,
       totalToolCalls: candidate.evaluation.totalToolCalls,
       usage: candidate.usage,
-    }, null, 2)}\n`)
+    })}\n`)
   }
 
   const createdAt = new Date().toISOString()
@@ -396,24 +581,39 @@ async function main() {
     candidates,
     configuration.anchor.openWorkstream,
   )
-  const result = {
+  const result = attachCandidateSetFingerprint({
     schemaVersion: 1,
     experiment: configuration.anchor.experiment,
     createdAt,
     endpoint: configuration.endpoint,
+    requestedModel: configuration.model,
     model: configuration.model,
+    fixtureId: configuration.anchor.fixture.fixtureId ?? null,
+    fixtureFingerprint: configuration.anchor.fixture.fingerprint
+      ?? fixtureFingerprint(configuration.anchor.fixture),
     anchorId: configuration.anchor.id,
+    anchor: {
+      task: configuration.anchor.task,
+      openWorkstream: configuration.anchor.openWorkstream,
+      maxTokens: configuration.maxTokens,
+      reasoningEffort: configuration.reasoningEffort,
+      continuationMessage: configuration.anchor.continuationMessage,
+      fixtureId: configuration.anchor.fixture.fixtureId ?? null,
+      fixtureFingerprint: configuration.anchor.fixture.fingerprint
+        ?? fixtureFingerprint(configuration.anchor.fixture),
+      tools: toolsForArm(ARM_NAMES.dshMinimal),
+    },
     selectedCandidate: selected?.candidateIndex ?? null,
     candidates,
-  }
+  })
 
-  const resultDirectory = resolve('results')
-  await mkdir(resultDirectory, { recursive: true })
+  await mkdir(resolve('results'), { recursive: true })
   const timestamp = createdAt.replaceAll(':', '-')
   const resultPath = resolve(
-    resultDirectory,
-    `anchor-candidates-${timestamp}.json`,
+    process.env.ANCHOR_RESULTS_PATH?.trim() ||
+      resolve('results', `anchor-candidates-${timestamp}.json`),
   )
+  await mkdir(dirname(resultPath), { recursive: true })
   await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
     encoding: 'utf8',
     mode: 0o600,
@@ -439,6 +639,7 @@ async function main() {
   }
 
   process.stdout.write(`${JSON.stringify({
+    type: 'done',
     savedResults: resultPath,
     eligibleCandidates: candidates.filter(
       (candidate) => candidate.evaluation.eligible,
@@ -446,10 +647,13 @@ async function main() {
     selectedCandidate: selected?.candidateIndex ?? null,
     frozenArtifact: artifactPath,
     artifactFingerprint,
-  }, null, 2)}\n`)
+  })}\n`)
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
-})
+const entryUrl = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null
+if (import.meta.url === entryUrl) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    process.exitCode = 1
+  })
+}

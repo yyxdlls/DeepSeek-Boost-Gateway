@@ -36,6 +36,48 @@ function toolList(tools = {}) {
   return tools.names?.length ? tools.names.join(' -> ') : 'none'
 }
 
+function normalizeUsageTokens(usage) {
+  if (!usage || typeof usage !== 'object') return null
+  const firstNumber = (...values) => {
+    for (const value of values) {
+      if (value === undefined || value === null || value === '') continue
+      const number = Number(value)
+      if (Number.isFinite(number) && number >= 0) return number
+    }
+    return null
+  }
+  const input = firstNumber(usage.prompt_tokens, usage.input_tokens)
+  const output = firstNumber(usage.completion_tokens, usage.output_tokens)
+  const reasoning = firstNumber(
+    usage.completion_tokens_details?.reasoning_tokens,
+    usage.output_tokens_details?.reasoning_tokens,
+    usage.reasoning_tokens,
+  )
+  return {
+    total: firstNumber(usage.total_tokens)
+      ?? (input !== null && output !== null ? input + output : null),
+    input,
+    output,
+    reasoning,
+    content: output !== null && reasoning !== null ? Math.max(0, output - reasoning) : null,
+  }
+}
+
+// Human-readable token stats. The Gateway never tokenizes the replay itself:
+// a summary without provider usage reports tokens=未返回 instead of a derived
+// character or byte figure.
+function tokenStats(summary) {
+  const tokens = (summary?.tokens && typeof summary.tokens === 'object')
+    ? summary.tokens
+    : normalizeUsageTokens(summary?.usage)
+  if (!tokens || Object.values(tokens).every((value) => value == null)) {
+    return 'tokens=未返回'
+  }
+  const field = (value) =>
+    value != null && Number.isFinite(Number(value)) ? String(Number(value)) : '未返回'
+  return `tokens=total=${field(tokens.total)} input=${field(tokens.input)} output=${field(tokens.output)} reasoning=${field(tokens.reasoning)} content=${field(tokens.content)}`
+}
+
 function renderEntry(entry) {
   const response = entry.response ?? {}
   const summary = response.summary ?? {}
@@ -52,9 +94,9 @@ function renderEntry(entry) {
           : 'incomplete'
   return [
     `${entry.requestId}  ${entry.profile ?? 'single'}  ${entry.request?.model ?? '-'}  ${entry.mode}  HTTP ${response.status ?? '-'}  ${status}  ${entry.durationMs ?? '-'}ms`,
-    `  current reasoning=${current.chars ?? 0} chars/${current.utf8Bytes ?? 0} bytes, opening=${current.openingStyle ?? 'empty'}, markers: ${countList(current.markers)}`,
-    `  current tools: ${toolList(summary.tools)}; visible=${summary.content?.chars ?? 0} chars; finish=${summary.finishReasons?.join(',') || 'none'}`,
-    `  anchor ${entry.transformation?.anchorId ?? 'none'}: ${anchor ? `${anchor.reasoning.chars} reasoning chars; tools ${toolList(anchor.tools)}` : 'not injected'}`,
+    `  current ${tokenStats(summary)}; opening=${current.openingStyle ?? 'empty'}, markers: ${countList(current.markers)}`,
+    `  current tools: ${toolList(summary.tools)}; finish=${summary.finishReasons?.join(',') || 'none'}`,
+    `  anchor ${entry.transformation?.anchorId ?? 'none'}: ${anchor ? `${tokenStats(anchor)}; tools ${toolList(anchor.tools)}` : 'not injected'}`,
   ].join('\n')
 }
 

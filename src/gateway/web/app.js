@@ -12,6 +12,7 @@ const elements = {
   autoRefresh: $('auto-refresh'),
   searchInput: $('search-input'),
   statusFilter: $('status-filter'),
+  inputFilter: $('input-filter'),
   requestRows: $('request-rows'),
   requestEmpty: $('request-empty'),
   requestCount: $('request-count'),
@@ -55,6 +56,35 @@ const elements = {
   anchorDialogTitle: $('anchor-dialog-title'),
   anchorDialogBody: $('anchor-dialog-body'),
   anchorDialogClose: $('anchor-dialog-close'),
+  anchorExample: $('anchor-example'),
+  selectDialog: $('select-dialog'),
+  selectForm: $('select-form'),
+  selectDialogClose: $('select-dialog-close'),
+  selectCancel: $('select-cancel'),
+  selectDialogNote: $('select-dialog-note'),
+  selectName: $('select-name'),
+  selectError: $('select-error'),
+  selectSubmit: $('select-submit'),
+  microAnchorCreate: $('micro-anchor-create'),
+  microAnchorWarning: $('micro-anchor-warning'),
+  microAnchorApplyNote: $('micro-anchor-apply-note'),
+  microAnchorDefinitions: $('micro-anchor-definitions'),
+  microAnchorProfiles: $('micro-anchor-profiles'),
+  microAnchorDialog: $('micro-anchor-dialog'),
+  microAnchorForm: $('micro-anchor-form'),
+  microAnchorDialogTitle: $('micro-anchor-dialog-title'),
+  microAnchorDialogNote: $('micro-anchor-dialog-note'),
+  microAnchorName: $('micro-anchor-name'),
+  microAnchorContent: $('micro-anchor-content'),
+  microAnchorContentField: $('micro-anchor-content-field'),
+  microAnchorDialogError: $('micro-anchor-dialog-error'),
+  microAnchorDialogClose: $('micro-anchor-dialog-close'),
+  microAnchorDialogCancel: $('micro-anchor-dialog-cancel'),
+  microAnchorDialogSubmit: $('micro-anchor-dialog-submit'),
+  microAnchorViewDialog: $('micro-anchor-view-dialog'),
+  microAnchorViewTitle: $('micro-anchor-view-title'),
+  microAnchorViewBody: $('micro-anchor-view-body'),
+  microAnchorViewClose: $('micro-anchor-view-close'),
   toast: $('toast'),
 }
 
@@ -69,7 +99,15 @@ const state = {
   selectedId: null,
   liveJobId: null,
   loading: false,
+  selectJobId: null,
+  selectCandidateIndex: null,
+  microAnchors: { cacheWarning: '', definitions: [], profiles: {} },
+  microAnchorApply: {},
+  microAnchorDialogState: null,
   token: sessionStorage.getItem('gateway-management-token') ?? '',
+  // A: 可编辑面板（profiles/部署/微锚/config）的数据指纹；quiet 刷新只在其
+  // 变化且焦点不在表单内时重绘，避免 5 秒自动刷新冲掉正在编辑的输入。
+  configFingerprint: null,
 }
 
 let toastTimer
@@ -83,6 +121,78 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;')
 }
+
+// 可 hover / 键盘 focus 的帮助说明：button.help-icon + aria-describedby
+// tooltip，不只依赖 title。tooltip 是按钮子元素，视觉上跟随按钮定位。
+let helpIconSeq = 0
+
+function helpIcon(text, ariaLabel = '帮助说明') {
+  const id = `help-tip-${++helpIconSeq}`
+  return `<button type="button" class="help-icon" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${id}"><span aria-hidden="true">?</span><span class="help-tooltip" role="tooltip" id="${id}">${escapeHtml(text)}</span></button>`
+}
+
+// 滚动容器（.candidate-dialog-body / .anchor-dialog-body / .detail-panel）的
+// overflow-y:auto 会裁切绝对定位的 help tooltip。这些容器里的图标在 hover/
+// focus 时把 tooltip 挂到 document.body（fixed 定位、图标上方），移出 / 失焦 /
+// 滚动时交还；容器外的图标仍用纯 CSS 的原地 tooltip。
+let bodyTooltip = null
+
+function tooltipContainer(icon) {
+  return icon.closest('.candidate-dialog-body, .anchor-dialog-body, .detail-panel')
+}
+
+function mountBodyTooltip(icon) {
+  if (!tooltipContainer(icon)) return
+  const bubble = icon.querySelector('.help-tooltip')
+  if (!bubble) return
+  if (bodyTooltip?.icon === icon) return
+  unmountBodyTooltip()
+  icon.classList.add('help-tooltip-detached')
+  const rect = icon.getBoundingClientRect()
+  const clone = document.createElement('span')
+  const cloneId = `${bubble.id}-detached`
+  clone.className = 'help-tooltip'
+  clone.id = cloneId
+  clone.setAttribute('role', 'tooltip')
+  clone.textContent = bubble.textContent
+  clone.style.position = 'fixed'
+  clone.style.left = `${rect.left + rect.width / 2}px`
+  clone.style.top = `${rect.top - 8}px`
+  clone.style.transform = 'translateX(-50%) translateY(-100%)'
+  clone.style.zIndex = '1000'
+  clone.style.opacity = '1'
+  clone.style.visibility = 'visible'
+  clone.style.transition = 'none'
+  document.body.appendChild(clone)
+  icon.setAttribute('aria-describedby', cloneId)
+  bodyTooltip = { icon, clone, previousId: bubble.id }
+}
+
+function unmountBodyTooltip() {
+  if (!bodyTooltip) return
+  bodyTooltip.icon.classList.remove('help-tooltip-detached')
+  bodyTooltip.icon.setAttribute('aria-describedby', bodyTooltip.previousId)
+  bodyTooltip.clone.remove()
+  bodyTooltip = null
+}
+
+document.addEventListener('mouseover', (event) => {
+  const icon = event.target.closest?.('.help-icon')
+  if (icon) mountBodyTooltip(icon)
+})
+document.addEventListener('mouseout', (event) => {
+  const icon = event.target.closest?.('.help-icon')
+  if (icon && !icon.contains(event.relatedTarget)) unmountBodyTooltip()
+})
+document.addEventListener('focusin', (event) => {
+  const icon = event.target.closest?.('.help-icon')
+  if (icon) mountBodyTooltip(icon)
+})
+document.addEventListener('focusout', (event) => {
+  const icon = event.target.closest?.('.help-icon')
+  if (icon && !icon.contains(event.relatedTarget)) unmountBodyTooltip()
+})
+document.addEventListener('scroll', () => unmountBodyTooltip(), true)
 
 function formatNumber(value) {
   if (!Number.isFinite(Number(value))) return '—'
@@ -241,15 +351,16 @@ async function fetchJson(path, options = {}) {
     cache: 'no-store',
   })
   if (!response.ok) {
-    let message = `Gateway returned HTTP ${response.status}`
+    let payload = null
     try {
-      const payload = await response.json()
-      message = payload?.error?.message ?? message
+      payload = await response.json()
     } catch {
       // Keep the transport-level message.
     }
+    const message = payload?.error?.message ?? `Gateway returned HTTP ${response.status}`
     const error = new Error(message)
     error.status = response.status
+    error.payload = payload
     throw error
   }
   return response.json()
@@ -305,12 +416,25 @@ function renderTools(names) {
   return `<div class="tool-sequence">${names.map((name, index) => `${index ? '<span class="tool-arrow">→</span>' : ''}<span class="tool-chip">${escapeHtml(name)}</span>`).join('')}</div>`
 }
 
+// A request whose new input holds only tool results (no fresh user message)
+// is a pure tool turn: the conversation continues from the tool side only.
+function isToolOnlyInput(entry) {
+  const current = entry?.messages?.currentInput
+  if (!Array.isArray(current) || current.length === 0) return false
+  return current.every((message) => message?.role === 'tool')
+}
+
 function filteredEntries() {
   const query = elements.searchInput.value.trim().toLowerCase()
   const filter = elements.statusFilter.value
+  const inputFilter = elements.inputFilter.value
   return state.entries.filter((entry) => {
     const status = requestState(entry)
     if (filter !== 'all' && status !== filter) return false
+    if (inputFilter !== 'all') {
+      const toolOnly = isToolOnlyInput(entry)
+      if (toolOnly !== (inputFilter === 'tool-only')) return false
+    }
     if (!query) return true
     const searchable = [
       entry.requestId,
@@ -322,14 +446,30 @@ function filteredEntries() {
   })
 }
 
+// A: run-mode card shows deployment topology instead of health.mode
+// (single-mode /health no longer exposes a single mode field).
+const metricModeLabels = {
+  single: '单端口',
+  split: '三端口',
+  all: '全开启',
+}
+const metricModeNotes = {
+  single: '按 request.model 路由',
+  split: '每端口一个模型',
+  all: '多模型口 + 三单模型口',
+}
+
 function renderMetrics() {
   const health = state.health
-  const instances = gatewayInstances()
   const complete = state.entries.filter((entry) => requestState(entry) === 'complete').length
-  const reasoningChars = state.entries.reduce(
-    (sum, entry) => sum + Number(entry.response?.summary?.reasoning?.chars ?? 0),
-    0,
-  )
+  // A: 顶栏只汇总上游返回的推理 tokens；无 usage 的条目不计入，不用字符顶替。
+  const reasoningTokenEntries = state.entries
+    .map((entry) => {
+      const reasoning = GatewayTokenUtils.tokensFromSummary(entry.response?.summary)?.reasoning
+      return Number.isFinite(Number(reasoning)) ? Number(reasoning) : null
+    })
+    .filter((value) => value != null)
+  const reasoningTokens = reasoningTokenEntries.reduce((sum, value) => sum + value, 0)
   const toolCalls = state.entries.reduce(
     (sum, entry) => sum + Number(entry.response?.summary?.tools?.callCount ?? 0),
     0,
@@ -340,13 +480,12 @@ function renderMetrics() {
     0,
   )
   const totalCache = aggregateCache(state.entries)
-  $('metric-mode').textContent = ['split', 'all'].includes(health?.deploymentMode) ? '父子进程' : health?.mode ?? '—'
+  const metricMode = health?.deploymentMode ?? 'single'
+  $('metric-mode').textContent = health ? (metricModeLabels[metricMode] ?? '—') : '—'
   $('metric-mode-note').textContent = health
     ? !health.gatewayApiKeyConfigured
       ? '数据面等待 Gateway Key'
-      : ['split', 'all'].includes(health.deploymentMode)
-        ? `1 个管理父进程 + ${instances.length} 个模型子进程 · ${health.gatewayApiKeyConfiguredCount ?? instances.length}/${instances.length} 已配置 Key`
-        : health.mode === 'anchor' ? 'Chat Completions 默认增强' : '默认透明旁路'
+      : metricModeNotes[metricMode] ?? '等待 Gateway'
     : '等待 Gateway'
   $('metric-anchors').textContent = health ? formatNumber(health.anchors?.length ?? 0) : '—'
   $('metric-anchor-note').textContent = health?.anchors?.length
@@ -362,9 +501,11 @@ function renderMetrics() {
   $('metric-complete-note').textContent = state.entries.length
     ? `${complete} / ${state.entries.length} 次完整结束`
     : '当前可见请求'
-  $('metric-reasoning').textContent = state.entries.length ? formatNumber(reasoningChars) : '—'
+  $('metric-reasoning').textContent = state.entries.length ? formatNumber(reasoningTokens) : '—'
   $('metric-reasoning-note').textContent = state.entries.length
-    ? `平均 ${formatNumber(Math.round(reasoningChars / state.entries.length))} 字符 / 请求`
+    ? reasoningTokenEntries.length
+      ? `平均 ${formatNumber(Math.round(reasoningTokens / reasoningTokenEntries.length))} tokens / 请求`
+      : '无 usage 的条目不计入'
     : '仅当前回复，不含 Anchor'
   $('metric-tools').textContent = state.entries.length ? `${toolCalls} / ${letMe}` : '—'
   $('metric-tools-note').textContent = state.entries.length
@@ -386,20 +527,30 @@ function renderRows() {
     const tools = currentToolNames(entry)
     const tokens = GatewayTokenUtils.tokensFromSummary(summary)
     const reasoningChars = Number(summary?.reasoning?.chars ?? 0)
-    const contentChars = Number(summary?.content?.chars ?? 0)
     const toolCount = Number(summary?.tools?.callCount ?? summary?.toolCallCount ?? 0)
     const inputValue = tokens?.input != null ? formatCompact(tokens.input) : '未返回'
     const outputValue = tokens?.output != null ? formatCompact(tokens.output) : '未返回'
+    // 推理/正文没有 token 分项时显示「—」，绝不回退字符数；输入/输出没有
+    // usage 时绝不冒充。
     const reasoningValue = tokens?.reasoning != null
       ? formatCompact(tokens.reasoning)
-      : `${formatCompact(reasoningChars)} 字符`
+      : '—'
     const contentValue = tokens?.content != null
       ? formatCompact(tokens.content)
-      : `${formatCompact(contentChars)} 字符`
-    // 推理/正文没有 token 分项时回退字符；输入/输出没有 usage 时绝不冒充。
+      : '—'
+    // 缓存输入/命中率三态：未返回（none）/ 零（默认 amber）/ 有效命中（good）。
+    const cacheInput = tokens?.cacheInput ?? null
+    const hitRate = tokens?.hitRate ?? null
+    const cacheInputState = cacheInput == null ? 'missing' : cacheInput > 0 ? 'good' : 'zero'
+    const hitRateState = hitRate == null ? 'missing' : hitRate > 0 ? 'good' : 'zero'
+    const cachePills = [
+      `<span class="cache-pill ${cacheInputState === 'good' ? 'good' : cacheInputState === 'missing' ? 'none' : ''}" title="${cacheInputState === 'missing' ? '上游未返回缓存 token 数据' : cacheInputState === 'zero' ? '上游返回缓存输入为 0' : '上游返回有效缓存输入'}">缓存输入 ${cacheInput != null ? `${formatCompact(cacheInput)} tokens` : '未返回'}</span>`,
+      `<span class="cache-pill ${hitRateState === 'good' ? 'good' : hitRateState === 'missing' ? 'none' : ''}" title="${hitRateState === 'missing' ? '上游未返回可计算的命中率' : hitRateState === 'zero' ? '有效缓存数据但命中率为 0' : '按已返回的缓存输入计算'}">命中率 ${hitRate != null ? formatPercent(hitRate) : '未返回'}</span>`,
+    ].join('')
     const cot = summary?.reasoning?.cot
     const cotBadge = reasoningChars > 0 && cot?.label ? trajectoryBadge(cot) : ''
     const modeClass = String(entry.mode ?? '').startsWith('anchor') ? 'anchor' : ''
+    const toolOnly = isToolOnlyInput(entry)
     return `
       <div data-request-id="${escapeHtml(entry.requestId)}" tabindex="0" role="listitem" class="request-row ${entry.requestId === state.selectedId ? 'selected' : ''}" aria-label="查看请求 ${escapeHtml(entry.requestId)}">
         <div class="row-line row-primary">
@@ -407,6 +558,7 @@ function renderRows() {
           ${cotBadge}
           <span class="status-label ${status}">${stateLabels[status]}</span>
           <span class="mode-label ${modeClass}">${escapeHtml(entry.mode ?? '—')}</span>
+          ${toolOnly ? '<span class="tool-only-badge" title="本次新增输入全部是工具结果，没有新的用户消息">纯工具调用</span>' : ''}
           <span class="row-model">${escapeHtml(entry.request?.model ?? shortId(entry.requestId))}${entry.profile ? ` · ${escapeHtml(entry.profile)}` : ''}</span>
           <span class="row-duration">${escapeHtml(formatDuration(entry.durationMs))}</span>
         </div>
@@ -416,7 +568,8 @@ function renderRows() {
             <span class="io-arrow" aria-hidden="true">→</span>
             <b title="${tokens?.output != null ? `上游输出 ${formatNumber(tokens.output)} tokens（推理 ${tokens.reasoning != null ? formatNumber(tokens.reasoning) : '未返回'} · 正文 ${tokens.content != null ? formatNumber(tokens.content) : '未返回'}）` : '上游未返回 usage'}">输出 ${outputValue}${tokens?.output != null ? ' tokens' : ''}</b>
           </span>
-          <span class="io-detail">缓存输入 ${tokens?.cacheInput != null ? `${formatCompact(tokens.cacheInput)} tokens` : '—'} · 命中 ${formatPercent(tokens?.hitRate)} · 推理 ${reasoningValue}${tokens?.reasoning != null ? ' tokens' : ''} · 正文 ${contentValue}${tokens?.content != null ? ' tokens' : ''} · 工具 ${formatNumber(toolCount)} 次</span>
+          ${cachePills}
+          <span class="io-detail">推理 ${reasoningValue}${tokens?.reasoning != null ? ' tokens' : ''} · 正文 ${contentValue}${tokens?.content != null ? ' tokens' : ''} · 工具 ${formatNumber(toolCount)} 次</span>
           ${tools.length ? renderTools(tools) : ''}
         </div>
       </div>`
@@ -436,21 +589,15 @@ function renderMarkers(markers) {
   if (!markers) return '<p class="muted">没有思维链关键字统计</p>'
   const meta = (id) => state.markerProfile?.markers?.find((marker) => marker.id === id) ?? null
   const profileIds = state.markerProfile?.markers?.map((marker) => marker.id) ?? []
-  const ids = [...new Set([...profileIds, ...Object.keys(markers)])]
-  const indexOf = (id) => profileIds.indexOf(id)
-  ids.sort((left, right) => {
-    const a = indexOf(left)
-    const b = indexOf(right)
-    if (a === -1 && b === -1) return Number(markers[right] ?? 0) - Number(markers[left] ?? 0)
-    if (a === -1) return 1
-    if (b === -1) return -1
-    return a - b
-  })
+  // 只渲染「命中」的关键字（count>0），且只展示生成侧同一套 v3 八项。
+  const ids = (profileIds.length ? profileIds : Object.keys(markers))
+    .filter((id) => Number(markers[id] ?? 0) > 0)
+  if (!ids.length) return '<p class="muted">未命中任何思维链关键字</p>'
   return `<div class="marker-grid">${ids.map((id) => {
     const count = Number(markers[id] ?? 0)
     const polarity = meta(id)?.polarity ?? 'diagnostic'
     const title = COT_POLARITY_TITLES[polarity] ?? '仅诊断'
-    return `<span class="marker-chip ${polarity} ${count ? 'hit' : 'zero'}" title="${title}">${escapeHtml(markerLabel(id))}<b>${formatNumber(count)}</b></span>`
+    return `<span class="marker-chip ${polarity} hit" title="${title}">${escapeHtml(markerLabel(id))}<b>${formatNumber(count)}</b></span>`
   }).join('')}</div>`
 }
 
@@ -460,22 +607,60 @@ function trajectoryBadge(cot) {
   return `<span class="cot-label ${escapeHtml(cot.label)}" title="I'm …ing/我正在 ×${progressive} · we need/我们需要/let's/让我们 ×${collective} · let me/让我 ×${interruptive}">${escapeHtml(trajectoryLabel(cot.label))}</span>`
 }
 
-function summaryBlock(title, scope, summary, note = '') {
+// A: highlighted「上下文占用」block placed above the generation stats.
+// 主数字 = 生成记录里的总 tokens（usage.totalTokens；没有则「未返回」）；
+// 副行 = 推理 tokens · 正文 tokens · 输入/输出（有则显示）。回放消息未经
+// Provider 分词，不计算、不声称精确 token；字数/UTF-8 字节不再作为产品统计。
+function renderContextOccupancy({
+  usage = null,
+  messageCount = null,
+  cot = null,
+  markers = null,
+}) {
+  const numbers = usage && typeof usage === 'object' ? usage : {}
+  const numeric = (field) => {
+    const value = numbers[field]
+    return value != null && Number.isFinite(Number(value)) ? Number(value) : null
+  }
+  const totalTokens = numeric('totalTokens')
+  const reasoningTokens = numeric('reasoningTokens')
+  const completionTokens = numeric('completionTokens')
+  const promptTokens = numeric('promptTokens')
+  const contentTokens = completionTokens != null && reasoningTokens != null
+    ? Math.max(0, completionTokens - reasoningTokens)
+    : null
+  const ioParts = []
+  if (promptTokens != null) ioParts.push(`输入 ${formatNumber(promptTokens)} tokens`)
+  if (completionTokens != null) ioParts.push(`输出 ${formatNumber(completionTokens)} tokens`)
+  return `
+    <div class="context-occupancy" aria-label="上下文占用">
+      <div class="context-occupancy-main">
+        <strong>${escapeHtml(totalTokens != null ? formatNumber(totalTokens) : '未返回')}</strong>
+        <span>生成记录总 tokens${messageCount != null ? ` · ${formatNumber(messageCount)} 条消息` : ''}</span>
+      </div>
+      <div class="context-occupancy-side">
+        <span>推理 ${reasoningTokens != null ? `${formatNumber(reasoningTokens)} tokens` : '未返回'} · 正文 ${contentTokens != null ? `${formatNumber(contentTokens)} tokens` : '未返回'}${ioParts.length ? ` · ${ioParts.join(' · ')}` : ''}</span>
+      </div>
+      <div class="context-occupancy-cot">
+        <span>思维链类型</span>
+        ${trajectoryBadge(cot)}
+      </div>
+      ${renderMarkers(markers)}
+    </div>`
+}
+
+// 锚点外推理与 Anchor 历史共用同一字段集：推理 tokens、推理块、开头节选、
+// 思维链类型、命中关键字。extra 用于给 Anchor 块追加「工具调用历史」。
+function summaryBlock(title, scope, summary, note = '', extra = '') {
   if (!summary) {
     return `<section class="detail-block"><div class="detail-block-heading"><h3>${escapeHtml(title)}</h3><span class="scope-badge">${escapeHtml(scope)}</span></div><p class="muted">${escapeHtml(note || '没有可用统计')}</p></section>`
   }
   const reasoning = summary.reasoning ?? {}
-  const content = summary.content ?? {}
-  const cache = cacheUsage(summary)
   const tokens = GatewayTokenUtils.tokensFromSummary(summary)
   const hasReasoningTokens = tokens?.reasoning != null
-  const hasContentTokens = tokens?.content != null
   const reasoningValue = hasReasoningTokens
     ? formatNumber(tokens.reasoning)
-    : formatNumber(reasoning.chars ?? summary.reasoningChars)
-  const contentValue = hasContentTokens
-    ? formatNumber(tokens.content)
-    : formatNumber(content.chars ?? summary.contentChars)
+    : '未返回'
   return `
     <section class="detail-block">
       <div class="detail-block-heading">
@@ -484,17 +669,14 @@ function summaryBlock(title, scope, summary, note = '') {
       </div>
       ${note ? `<p class="muted">${escapeHtml(note)}</p>` : ''}
       <div class="mini-metrics">
-        <div class="mini-metric"><span>${hasReasoningTokens ? '推理 tokens' : '推理字符'}</span><strong>${reasoningValue}</strong></div>
-        <div class="mini-metric"><span>${hasContentTokens ? '正文 tokens' : '正文字符'}</span><strong>${contentValue}</strong></div>
+        <div class="mini-metric"><span>推理 tokens</span><strong>${reasoningValue}</strong></div>
         <div class="mini-metric"><span>推理块</span><strong>${formatNumber(reasoning.nonEmptyBlocks ?? reasoning.blocks)}</strong></div>
-        <div class="mini-metric wide"><span title="英文保留前四个词，中文保留前四个字">开头四词 / 四字</span><strong>${escapeHtml(openingPreview(reasoning))}</strong></div>
-        <div class="mini-metric"><span>思维链</span><strong>${escapeHtml(trajectoryLabel(reasoning.cot?.label))}</strong></div>
-        ${cache ? `<div class="mini-metric"><span>缓存命中率</span><strong>${formatPercent(cache.hitRate)}</strong></div>` : ''}
+        <div class="mini-metric wide"><span title="第一句（到「。．.！!？?」为止）；无句号时保留前 40 个字符">开头节选</span><strong>${escapeHtml(openingPreview(reasoning))}</strong></div>
+        <div class="mini-metric wide"><span>思维链</span><strong>${escapeHtml(trajectoryLabel(reasoning.cot?.label))}</strong></div>
       </div>
       <p class="subheading">思维链关键字</p>
       ${renderMarkers(reasoning.markers)}
-      <p class="subheading">工具调用序列</p>
-      ${renderTools(summary.tools?.names ?? summary.toolNames ?? [])}
+      ${extra}
     </section>`
 }
 
@@ -502,8 +684,9 @@ function basicInfoFacts(entry, summary) {
   const cache = cacheUsage(summary)
   const tokens = GatewayTokenUtils.tokensFromSummary(summary)
   const toolCalls = Number(summary?.tools?.callCount ?? summary?.toolCallCount ?? 0)
-  const reasoningChars = Number(summary?.reasoning?.chars ?? 0)
-  const contentChars = Number(summary?.content?.chars ?? 0)
+  const totalValue = tokens?.total != null
+    ? `${formatNumber(tokens.total)} tokens`
+    : '未返回'
   const inputValue = tokens?.input != null
     ? `${formatNumber(tokens.input)} tokens`
     : '未返回'
@@ -512,14 +695,16 @@ function basicInfoFacts(entry, summary) {
     : '未返回'
   const reasoningValue = tokens?.reasoning != null
     ? `${formatNumber(tokens.reasoning)} tokens`
-    : `${formatCompact(reasoningChars)} 字符`
+    : '未返回'
   const contentValue = tokens?.content != null
     ? `${formatNumber(tokens.content)} tokens`
-    : `${formatCompact(contentChars)} 字符`
+    : '未返回'
   const cacheInput = tokens?.cacheInput ?? cache?.hitTokens
   const uncachedInput = tokens?.uncachedInput ?? cache?.missTokens
   const hitRate = tokens?.hitRate ?? cache?.hitRate
+  const toolNames = summary?.tools?.names ?? summary?.toolNames ?? []
   return `
+    <div class="basic-stat"><span>总 tokens</span><b>${totalValue}</b></div>
     <div class="basic-stat"><span>输入</span><b>${inputValue}</b></div>
     <div class="basic-stat"><span>输出</span><b>${outputValue}</b></div>
     <div class="basic-stat"><span>缓存输入</span><b>${cacheInput != null ? formatNumber(cacheInput) : '—'}</b></div>
@@ -527,7 +712,8 @@ function basicInfoFacts(entry, summary) {
     <div class="basic-stat"><span>命中率</span><b>${formatPercent(hitRate)}</b></div>
     <div class="basic-stat"><span>推理</span><b>${reasoningValue}</b></div>
     <div class="basic-stat"><span>正文</span><b>${contentValue}</b></div>
-    <div class="basic-stat"><span>工具次数</span><b>${formatNumber(toolCalls)}</b></div>`
+    <div class="basic-stat"><span>工具次数</span><b>${formatNumber(toolCalls)}</b></div>
+    <div class="basic-stat wide"><span>工具序列</span><div class="basic-stat-value">${toolNames.length ? renderTools(toolNames) : '<span class="muted">无</span>'}</div></div>`
 }
 
 function responseReason(entry, summary) {
@@ -539,6 +725,27 @@ function responseReason(entry, summary) {
     return `结束原因：${summary.finishReasons.map(escapeHtml).join(', ')}`
   }
   return '—'
+}
+
+function microAnchorDiagnosticBlock(transformation) {
+  const micro = transformation?.microAnchor
+  const historyFingerprint = transformation?.thirdPartyHistoryFingerprint
+  if (!micro && !historyFingerprint) return ''
+  const reason = micro?.reason ?? (micro?.applied ? 'applied' : 'not-applied')
+  return `
+    <section class="detail-block">
+      <div class="detail-block-heading"><h3>微锚点</h3><span class="scope-badge">micro-anchor</span></div>
+      <p class="muted">独立诊断：追加发生在第三方 user 历史上，不会出现在「本次原始消息」里。</p>
+      <dl class="fact-list">
+        <div><dt>开关</dt><dd>${micro?.enabled ? '开启' : '关闭'}</dd></div>
+        <div><dt>保存项</dt><dd>${escapeHtml(micro?.id ?? '—')}</dd></div>
+        <div><dt>来源</dt><dd>${escapeHtml(micro?.source ?? '—')}</dd></div>
+        <div><dt>已追加</dt><dd>${micro?.applied ? `是 · ${formatNumber(micro.appliedUserMessageCount ?? 0)} 条 user` : '否'}</dd></div>
+        <div><dt>原因</dt><dd>${escapeHtml(reason)}</dd></div>
+        <div><dt>内容指纹</dt><dd><code>${escapeHtml(micro?.contentFingerprint ?? '—')}</code></dd></div>
+        <div><dt>第三方历史指纹</dt><dd><code>${escapeHtml(historyFingerprint ?? '—')}</code></dd></div>
+      </dl>
+    </section>`
 }
 
 function renderDetail() {
@@ -557,7 +764,9 @@ function renderDetail() {
   const responseSummary = entry.response?.summary
   const anchorHistory = entry.transformation?.anchorHistory
   const cache = cacheUsage(responseSummary)
-  const hasMessages = Array.isArray(entry.messages?.request) || Array.isArray(entry.messages?.response)
+  const hasMessages =
+    (Array.isArray(entry.messages?.request) && entry.messages.request.length > 0) ||
+    (Array.isArray(entry.messages?.response) && entry.messages.response.length > 0)
 
   elements.detailPanel.innerHTML = `
     <div class="detail-header">
@@ -587,8 +796,14 @@ function renderDetail() {
 
     ${summaryBlock('锚点外推理（本次回复）', '本次回复', responseSummary, `只统计这一次上游新生成的内容 · 开头「${escapeHtml(openingPreview(responseSummary?.reasoning))}」`)}
     ${summaryBlock('锚点（Anchor 历史）', '锚点历史', anchorHistory, entry.transformation
-      ? `Anchor ${entry.transformation.anchorId ?? '—'} · 注入 ${formatNumber(entry.transformation.anchorMessageChars)} 字符`
-      : '本次请求没有注入 Anchor。')}
+      ? `Anchor ${entry.transformation.anchorId ?? '—'} · 注入 ${formatNumber(entry.transformation.anchorMessageCount ?? 0)} 条消息`
+      : '本次请求没有注入 Anchor。', `${renderContextOccupancy({
+        usage: null,
+        messageCount: entry.transformation?.anchorMessageCount ?? null,
+        cot: anchorHistory?.reasoning?.cot ?? null,
+        markers: anchorHistory?.reasoning?.markers ?? null,
+      })}<p class="subheading">工具调用历史</p>${renderTools(anchorHistory?.tools?.names ?? anchorHistory?.toolNames ?? [])}`)}
+    ${microAnchorDiagnosticBlock(entry.transformation)}
 
     <section class="detail-block">
       <div class="detail-block-heading"><h3>状态</h3><span class="scope-badge">status</span></div>
@@ -629,7 +844,11 @@ function anchorIsBound(artifact) {
 }
 
 function renderAnchors() {
-  const catalog = state.anchorCatalog
+  // 产品列表只展示 default/user 混排；control 由服务端列表排除，
+  // 前端再过滤一次以防未来后端字段变化。
+  const catalog = state.anchorCatalog.filter(
+    (artifact) => artifact.category !== 'control' && !artifact.copiedBaseline,
+  )
   const bindings = loadBindings()
   if (!catalog.length) {
     elements.anchorList.innerHTML = bindings.length
@@ -637,7 +856,6 @@ function renderAnchors() {
       <div class="anchor-card bound">
         <div>
           <strong>${escapeHtml(anchor.model ?? '未知模型')}</strong>
-          <small>${escapeHtml(anchor.id ?? '未命名')}</small>
           <span class="anchor-badges"><span class="anchor-badge bound">当前绑定</span></span>
         </div>
         <div>
@@ -651,15 +869,16 @@ function renderAnchors() {
   }
   const cards = catalog.map((artifact) => {
     const bound = anchorIsBound(artifact)
+    const categoryBadge = artifact.category === 'default'
+      ? '<span class="anchor-badge default" title="模型原生示例 Anchor（默认）">模型默认</span>'
+      : '<span class="anchor-badge generated" title="用户生成并保存的 Anchor">用户生成</span>'
     return `
     <div class="anchor-card ${bound ? 'bound' : ''}">
       <div>
-        <strong>${escapeHtml(artifact.model ?? '未知模型')}</strong>
-        <small>${escapeHtml(artifact.id ?? '未命名')}</small>
+        <strong>${escapeHtml(artifact.displayName ?? artifact.id ?? '未命名')}</strong>
+        <small>${escapeHtml(artifact.model ?? '未知模型')}</small>
         <span class="anchor-badges">
-          ${artifact.bundledDefault
-            ? '<span class="anchor-badge default">内置默认</span>'
-            : '<span class="anchor-badge generated">已生成</span>'}
+          ${categoryBadge}
           ${bound ? '<span class="anchor-badge bound">当前绑定</span>' : ''}
         </span>
       </div>
@@ -669,6 +888,9 @@ function renderAnchors() {
       </div>
       <div class="anchor-card-actions">
         <button class="button ghost" type="button" data-view-anchor-path="${escapeHtml(artifact.path ?? '')}" data-view-anchor-id="${escapeHtml(artifact.id ?? '')}">只读查看</button>
+        ${artifact.category === 'user'
+          ? `<button class="button danger" type="button" data-delete-anchor-path="${escapeHtml(artifact.path ?? '')}" data-delete-anchor-id="${escapeHtml(artifact.id ?? '')}">删除</button>`
+          : ''}
       </div>
     </div>`
   }).join('')
@@ -678,7 +900,6 @@ function renderAnchors() {
     <div class="anchor-card bound">
       <div>
         <strong>${escapeHtml(anchor.model ?? '未知模型')}</strong>
-        <small>${escapeHtml(anchor.id ?? '未命名')}</small>
         <span class="anchor-badges"><span class="anchor-badge bound">当前绑定</span><span class="anchor-badge orphan">目录中未发现</span></span>
       </div>
       <div>
@@ -700,13 +921,30 @@ function renderProfiles() {
     const keyPreview = profile.apiKeyPreview
       ? `<small class="key-preview">当前保存：<code>${escapeHtml(profile.apiKeyPreview)}</code></small>`
       : '<small class="key-preview empty">当前未保存 Key</small>'
-    const availableAnchors = state.anchorCatalog.filter((anchor) => anchor.model === profile.model)
-    if (profile.anchorPath && !availableAnchors.some((anchor) => anchor.path === profile.anchorPath)) {
-      availableAnchors.unshift({ id: '当前配置（目录中未发现）', path: profile.anchorPath })
+    const availableAnchors = state.anchorCatalog.filter(
+      (anchor) => anchor.model === profile.model &&
+        anchor.category !== 'control' && !anchor.copiedBaseline,
+    )
+    if (profile.anchorPath && !availableAnchors.some((anchor) => (
+      bindingMatchesArtifact({ path: profile.anchorPath }, anchor)
+    ))) {
+      availableAnchors.unshift({
+        id: '当前配置（目录中未发现）',
+        displayName: '当前配置（目录中未发现）',
+        path: profile.anchorPath,
+      })
     }
     const anchorOptions = [
       `<option value="" ${profile.anchorPath ? '' : 'selected'}>未绑定 Anchor（bypass 可用）</option>`,
-      ...availableAnchors.map((anchor) => `<option value="${escapeHtml(anchor.path)}" ${anchor.path === profile.anchorPath ? 'selected' : ''}>${escapeHtml(anchor.id)}${anchor.bundledDefault ? ' · 内置只读' : ' · 已冻结'}</option>`),
+      ...availableAnchors.map((anchor) => {
+        const suffix = anchor.category === 'default'
+          ? ' · 模型默认'
+          : anchor.category === 'user'
+            ? ' · 用户生成'
+            : ''
+        const selected = bindingMatchesArtifact({ path: profile.anchorPath }, anchor)
+        return `<option value="${escapeHtml(anchor.path)}" ${selected ? 'selected' : ''}>${escapeHtml(anchor.displayName ?? anchor.id)}${suffix}</option>`
+      }),
     ].join('')
     return `
     <article class="profile-card">
@@ -720,7 +958,7 @@ function renderProfiles() {
           <label><span>数据端口</span><input name="port" type="number" min="1" max="65535" value="${escapeHtml(profile.port)}" required></label>
           <label><span>增强模式</span><select name="enhancementMode"><option value="anchor" ${profile.enhancementMode === 'anchor' ? 'selected' : ''}>anchor</option><option value="bypass" ${profile.enhancementMode === 'bypass' ? 'selected' : ''}>bypass</option></select></label>
           <label class="wide"><span>上游 Base URL</span><input name="upstreamBaseUrl" type="url" value="${escapeHtml(profile.upstreamBaseUrl)}" required spellcheck="false"></label>
-          <label class="wide"><span>Gateway API Key</span><input name="apiKey" type="password" value="" placeholder="${profile.apiKeyConfigured ? profile.apiKeySource === 'shared-fallback' ? '当前继承共享 Key；输入后改为独立 Key' : '输入新 Key 可替换；留空保持不变' : '尚未配置'}" autocomplete="new-password" spellcheck="false">${keyPreview}</label>
+          <label class="wide"><span>Gateway API Key</span><input name="apiKey" type="password" value="" placeholder="${profile.apiKeyConfigured ? '输入新 Key 可替换；留空保持不变' : '尚未配置'}" autocomplete="new-password" spellcheck="false">${keyPreview}</label>
           <label class="wide"><span>模型专属 Anchor</span><select name="anchorPath">${anchorOptions}</select></label>
           <label class="toggle-field wide"><input name="clearApiKey" type="checkbox"><span>保存时清除现有 Key</span></label>
         </div>
@@ -732,9 +970,9 @@ function renderProfiles() {
 }
 
 const deploymentModeLabels = {
-  split: '多端口 · 每端口一个模型',
-  single: '单数据端口 · 多模型',
-  all: '全部开启',
+  split: '三端口 · 每端口一个模型',
+  single: '一个多模型路由口 · 按 request.model 路由',
+  all: '多模型路由口 + 三个单模型口',
 }
 
 function renderDeployment() {
@@ -744,14 +982,17 @@ function renderDeployment() {
   }
   elements.deploymentMode.value = deployment.mode ?? 'split'
   elements.deploymentCombinedPort.value = deployment.combinedPort ?? 8646
-  elements.deploymentNote.textContent = `当前运行：${deploymentModeLabels[state.health?.deploymentMode] ?? state.health?.deploymentMode ?? '未知'}；保存后需重启才切换拓扑。single 与 all 的合并数据面使用共享上游和 Key；8646 只在“全部开启”时使用。`
+  elements.deploymentNote.textContent = `当前运行：${deploymentModeLabels[state.health?.deploymentMode] ?? state.health?.deploymentMode ?? '未知'}；保存后需重启才切换拓扑。8646 只在“多模型路由口 + 三个单模型口”时使用。`
 }
 
 const jobStatusLabels = {
   queued: '排队中',
   running: '生成中',
   'awaiting-selection': '待挑选候选',
+  'reserving-name': '正在保存',
   freezing: '正在保存',
+  saved: '已保存',
+  'saved-not-activated': '已保存，绑定失败',
   succeeded: '已保存并启用',
   failed: '失败',
   discarded: '已废弃',
@@ -795,13 +1036,18 @@ function renderJobProgress(job) {
   const tools = Number(live?.totalToolCalls ?? 0)
   const candidateText = live ? `候选 ${live.candidate} / ${job.runs} · 第 ${live.subturn} 轮` : `候选 / ${job.runs}`
   const reasoningTail = live?.reasoningTail || '正在等待第一个上游响应…'
+  // A: 直播标题只报上游返回的推理 tokens；没有 usage 时只写「推理中」。
+  const reasoningTokens = usage?.reasoningTokens != null ? Number(usage.reasoningTokens) : null
+  const reasoningTitle = reasoningTokens != null
+    ? `已输出推理 ${formatNumber(reasoningTokens)} tokens`
+    : '推理中'
   return `
     <div class="job-progress">
-      <p class="job-progress-title"><span class="pulse-dot"></span>${candidateText} · 已输出推理 ${formatNumber(live?.reasoningChars ?? 0)} 字符</p>
+      <p class="job-progress-title"><span class="pulse-dot"></span>${candidateText} · ${reasoningTitle}</p>
       <div class="job-live-stats">
-        <span>输入 <b>${inputTokens ? `${formatCompact(inputTokens)} tokens` : '…'}</b></span>
-        <span>输出 <b>${outputTokens ? `${formatCompact(outputTokens)} tokens` : '…'}</b></span>
-        <span>缓存命中 <b>${cacheTotal ? formatPercent(cacheRate) : '…'}</b></span>
+        <span>输入 <b>${inputTokens ? `${formatCompact(inputTokens)} tokens` : '—'}</b></span>
+        <span>输出 <b>${outputTokens ? `${formatCompact(outputTokens)} tokens` : '—'}</b></span>
+        <span>缓存命中 <b>${cacheTotal ? formatPercent(cacheRate) : '—'}</b></span>
         <span>工具 <b>${tools}</b> 次</span>
       </div>
       <p class="job-live-line" title="${escapeHtml(reasoningTail)}">${escapeHtml(reasoningTail)}</p>
@@ -823,8 +1069,9 @@ function renderCandidateList(job) {
         const cacheMiss = Number(usage.cacheMissTokens ?? 0)
         const cacheTotal = cacheHit + cacheMiss
         const cacheRate = cacheTotal ? cacheHit / cacheTotal : null
-        const reasoningTokens = Number(usage.reasoningTokens ?? 0)
-        const contentTokens = outputTokens && reasoningTokens <= outputTokens
+        const totalTokens = usage.totalTokens != null ? Number(usage.totalTokens) : null
+        const reasoningTokens = usage.reasoningTokens != null ? Number(usage.reasoningTokens) : null
+        const contentTokens = usage.completionTokens != null && reasoningTokens != null && reasoningTokens <= outputTokens
           ? outputTokens - reasoningTokens
           : null
         return `
@@ -840,15 +1087,17 @@ function renderCandidateList(job) {
             </div>
           </div>
           <div class="basic-stats">
+            <div class="basic-stat"><span>总 tokens</span><b>${totalTokens != null ? `${formatNumber(totalTokens)} tokens` : '—'}</b></div>
             <div class="basic-stat"><span>输入</span><b>${inputTokens ? `${formatNumber(inputTokens)} tokens` : '—'}</b></div>
             <div class="basic-stat"><span>输出</span><b>${outputTokens ? `${formatNumber(outputTokens)} tokens` : '—'}</b></div>
             <div class="basic-stat"><span>缓存输入</span><b>${formatNumber(cacheHit)} tokens</b></div>
             <div class="basic-stat"><span>命中率</span><b>${formatPercent(cacheRate)}</b></div>
             <div class="basic-stat"><span>工具</span><b>${formatNumber(candidate.totalToolCalls)}</b></div>
-            <div class="basic-stat"><span>推理</span><b>${reasoningTokens ? `${formatNumber(reasoningTokens)} tokens` : `${formatNumber(candidate.reasoningChars)} 字符`}</b></div>
-            <div class="basic-stat"><span>正文</span><b>${contentTokens != null ? `${formatNumber(contentTokens)} tokens` : `${formatNumber(candidate.contentChars)} 字符`}</b></div>
+            <div class="basic-stat"><span>推理</span><b>${reasoningTokens != null ? `${formatNumber(reasoningTokens)} tokens` : '—'}</b></div>
+            <div class="basic-stat"><span>正文</span><b>${contentTokens != null ? `${formatNumber(contentTokens)} tokens` : '—'}</b></div>
             <div class="basic-stat wide"><span>开头预览</span><b>${escapeHtml(candidate.openingPreview || '—')}</b></div>
           </div>
+          <p class="subheading">工具调用状态 ${helpIcon('仅表示生成轨迹中是否完成对应调用，不代表质量判定。')}</p>
           ${renderBuilderToolStatus(candidate)}
           <p class="subheading">思维链关键字</p>
           ${renderMarkers(candidate.markers)}
@@ -861,85 +1110,357 @@ function renderCandidateList(job) {
     </div>`
 }
 
+function jobDetail(job) {
+  if (job.error) {
+    return escapeHtml(job.error)
+  }
+  if (job.status === 'awaiting-selection') {
+    return `${job.candidates?.length ?? 0} 个候选已生成，请根据自然输出挑选`
+  }
+  if (job.status === 'succeeded') {
+    return `${job.runs} 个候选 · 已保存候选 ${job.selectedCandidate ?? '—'} · ${job.displayName ? `名称 ${escapeHtml(job.displayName)}` : ''}${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}`
+  }
+  if (['saved', 'saved-not-activated'].includes(job.status)) {
+    return `${job.runs} 个候选 · 已保存候选 ${job.selectedCandidate ?? '—'} · ${job.displayName ? `名称 ${escapeHtml(job.displayName)}` : ''}${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}${job.status === 'saved-not-activated' ? ' · 已保存但未绑定，请重新绑定' : ''}`
+  }
+  return `${job.runs} 个候选 · 思考强度 ${escapeHtml(job.reasoningEffort ?? 'max')} · 最多 ${job.maximumUpstreamCalls} 次请求${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}`
+}
+
 function renderAnchorJobs() {
   if (!state.jobs.length) {
     elements.anchorJobs.innerHTML = ''
     return
   }
   elements.anchorJobs.innerHTML = state.jobs.slice(0, 5).map((job) => {
-    const detail = job.error
-      ? job.error
-      : job.status === 'awaiting-selection'
-        ? `${job.candidates?.length ?? 0} 个候选已生成，请根据自然输出挑选`
-        : job.status === 'succeeded'
-          ? `${job.runs} 个候选 · 已选用候选 ${job.selectedCandidate ?? '—'} · ${job.artifactPath ? escapeHtml(job.artifactPath) : ''}`
-          : `${job.runs} 个候选 · 思考强度 ${escapeHtml(job.reasoningEffort ?? 'max')} · 提示词 ${formatNumber(job.anchorPromptChars)} 字符 · 最多 ${job.maximumUpstreamCalls} 次请求${job.artifactPath ? ` · ${escapeHtml(job.artifactPath)}` : ''}`
+    const detail = jobDetail(job)
+    const expanded = ['awaiting-selection', 'running', 'queued', 'saved-not-activated'].includes(job.status)
+    const rebind = job.status === 'saved-not-activated'
+      ? `<div class="job-row-actions"><button class="button primary" type="button" data-activate-job="${escapeHtml(job.id)}">重新绑定</button></div>`
+      : ''
     return `
-    <div class="job-card ${job.status === 'running' || job.status === 'queued' ? 'running' : ''} ${job.status === 'awaiting-selection' || job.status === 'running' || job.status === 'queued' ? 'expanded' : ''}">
+    <div class="job-card ${job.status === 'running' || job.status === 'queued' ? 'running' : ''} ${expanded ? 'expanded' : ''}">
       <div class="job-row">
         <div>
-          <strong>${escapeHtml(job.profile.toUpperCase())} · ${escapeHtml(job.anchorId)}</strong>
+          <strong>${escapeHtml(job.profile.toUpperCase())} · ${escapeHtml(job.anchorId ?? '未命名 Anchor')}</strong>
           <small>${detail}</small>
         </div>
         <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(jobStatusLabels[job.status] ?? job.status)}</span>
       </div>
+      ${rebind}
       ${renderJobProgress(job)}
       ${renderCandidateList(job)}
     </div>`
   }).join('')
 }
 
-async function pickJobAction(button, action) {
-  const jobId = action === 'select' ? button.dataset.selectCandidate : button.dataset.discardJob
+function updateJobFromResult(job) {
+  const index = state.jobs.findIndex((item) => item.id === job.id)
+  if (index !== -1) state.jobs[index] = job
+}
+
+async function refreshJobsQuiet() {
+  try {
+    const result = await fetchJson('/__gateway/anchors/jobs')
+    state.jobs = Array.isArray(result.jobs) ? result.jobs : []
+    renderAnchorJobs()
+  } catch {
+    // Keep the current list; the next full refresh will repair it.
+  }
+}
+
+async function activateSavedJob(button, jobId) {
   const job = state.jobs.find((item) => item.id === jobId)
   if (!job) return
-  const candidateIndex = Number(button.dataset.candidateIndex)
-  if (action === 'select' &&
-    !window.confirm(`将把候选 ${candidateIndex} 冻结为 Anchor 并绑定到 ${job.profile.toUpperCase()}，已启用的数据面会立即热应用。继续吗？`)) return
-  if (action === 'discard' &&
-    !window.confirm('将废弃本次生成的全部候选，结果文件也会一并删除，已产生的上游费用不会退回。确定继续吗？')) return
   button.disabled = true
   try {
-    const result = await fetchJson(`/__gateway/anchors/jobs/${encodeURIComponent(jobId)}/${action}`, {
+    const result = await fetchJson(`/__gateway/anchors/jobs/${encodeURIComponent(jobId)}/activate`, {
       method: 'POST',
-      body: action === 'select' ? { candidate: candidateIndex } : {},
+      body: {},
     })
-    const index = state.jobs.findIndex((item) => item.id === jobId)
-    if (index !== -1) state.jobs[index] = result.job
+    updateJobFromResult(result.job)
     renderAnchorJobs()
     renderAnchorControls()
-    toast(action === 'select'
-      ? '已开始冻结所选候选；完成后自动绑定并热应用'
-      : '本次生成已废弃')
-    loadData({ quiet: true })
+    toast(result.job.status === 'succeeded'
+      ? `已保存并绑定到 ${result.job.profile.toUpperCase()}`
+      : `重新绑定未完成：${result.job.error ?? '未知原因'}`)
+    void loadData({ quiet: true })
+  } catch (error) {
+    toast(`重新绑定失败：${error.message}`)
+    button.disabled = false
+    void refreshJobsQuiet()
+  }
+}
+
+function openSelectDialog(jobId, candidateIndex) {
+  const job = state.jobs.find((item) => item.id === jobId)
+  if (!job) return
+  if (elements.selectDialog.open) return
+  // A: 工具调用不是保存门槛。缺 bash / view 时仍高亮未调用，但保存前
+  // 让用户确认；取消则不发请求，确认后照常保存。
+  const numericCandidateIndex = Number(candidateIndex)
+  const candidate = (job.candidates ?? []).find(
+    (item) => item.candidateIndex === numericCandidateIndex,
+  )
+  const toolsComplete = Boolean(candidate?.toolStatus?.bash) &&
+    Boolean(candidate?.toolStatus?.strReplaceEditor)
+  if (!toolsComplete) {
+    const confirmed = window.confirm('该候选未完成全部工具调用（bash / view）。仍要保存吗？')
+    if (!confirmed) return
+  }
+  state.selectJobId = jobId
+  state.selectCandidateIndex = Number(candidateIndex)
+  elements.selectDialogNote.textContent = `候选 ${candidateIndex} · ${job.profile.toUpperCase()} · 保存生成机器 id/path 后尝试绑定 ${job.profile.toUpperCase()} 数据面`
+  elements.selectName.value = ''
+  elements.selectError.hidden = true
+  elements.selectError.textContent = ''
+  elements.selectSubmit.disabled = false
+  elements.selectDialog.showModal()
+  elements.selectName.focus()
+}
+
+async function pickJobAction(button, action) {
+  if (action === 'activate') {
+    const activateJobId = button.dataset.activateJob
+    if (!activateJobId) return
+    await activateSavedJob(button, activateJobId)
+    return
+  }
+  const jobId = button.dataset.discardJob
+  const job = state.jobs.find((item) => item.id === jobId)
+  if (!job) return
+  if (!window.confirm('将废弃本次生成的全部候选，结果文件也会一并删除，已产生的上游费用不会退回。确定继续吗？')) return
+  button.disabled = true
+  try {
+    const result = await fetchJson(`/__gateway/anchors/jobs/${encodeURIComponent(jobId)}/discard`, {
+      method: 'POST',
+      body: {},
+    })
+    updateJobFromResult(result.job)
+    renderAnchorJobs()
+    renderAnchorControls()
+    toast('本次生成已废弃')
+    void loadData({ quiet: true })
   } catch (error) {
     toast(`操作失败：${error.message}`)
     button.disabled = false
   }
 }
 
-function conversationBlock(message, index) {
+elements.selectDialogClose.addEventListener('click', () => {
+  elements.selectDialog.close()
+  state.selectJobId = null
+  state.selectCandidateIndex = null
+})
+elements.selectCancel.addEventListener('click', () => {
+  elements.selectDialog.close()
+  state.selectJobId = null
+  state.selectCandidateIndex = null
+})
+
+elements.selectForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const jobId = state.selectJobId
+  const candidateIndex = state.selectCandidateIndex
+  if (!jobId || candidateIndex == null) return
+  const displayName = elements.selectName.value.trim()
+  if (displayName.length < 1 || displayName.length > 80) {
+    elements.selectError.textContent = '名称必须为 1–80 个字符（首尾空白会被忽略）。'
+    elements.selectError.hidden = false
+    return
+  }
+  const submit = elements.selectSubmit
+  submit.disabled = true
+  try {
+    const result = await fetchJson(`/__gateway/anchors/jobs/${encodeURIComponent(jobId)}/select`, {
+      method: 'POST',
+      body: { candidate: candidateIndex, displayName, activate: true },
+    })
+    updateJobFromResult(result.job)
+    elements.selectDialog.close()
+    state.selectJobId = null
+    state.selectCandidateIndex = null
+    if (result.job.status === 'succeeded') {
+      toast(`已保存并绑定到 ${result.job.profile.toUpperCase()}`)
+    } else if (result.job.status === 'saved-not-activated') {
+      toast('已保存，但绑定数据面失败；请在任务卡片中重新绑定')
+    } else {
+      toast('已保存；未自动绑定')
+    }
+    renderAnchorControls()
+    void loadData({ quiet: true })
+  } catch (error) {
+    if (error.status === 400) {
+      elements.selectError.textContent = error.message
+      elements.selectError.hidden = false
+      submit.disabled = false
+      return
+    }
+    if (error.status === 409) {
+      // 保存可能已部分完成（重名冲突没有落盘 / CAS 冲突已保存未绑定）。
+      // 回读服务端任务状态再决定对话框去留。
+      submit.disabled = false
+      await refreshJobsQuiet()
+      const job = state.jobs.find((item) => item.id === jobId)
+      if (job?.status === 'awaiting-selection') {
+        elements.selectError.textContent = error.message
+        elements.selectError.hidden = false
+        return
+      }
+      elements.selectDialog.close()
+      state.selectJobId = null
+      state.selectCandidateIndex = null
+      if (job?.status === 'saved-not-activated') {
+        toast('已保存，但绑定数据面失败；请在任务卡片中重新绑定')
+      } else {
+        toast(`保存失败：${error.message}`)
+      }
+      renderAnchorControls()
+      return
+    }
+    elements.selectError.textContent = error.message
+    elements.selectError.hidden = false
+    submit.disabled = false
+  }
+})
+
+// 对话角色在界面上的统一解释。user 是用户/引导请求；assistant 是模型消息
+// 容器（可同含思维链、正文和工具调用）；tool 只代表对应调用的工具结果，
+// 不等于本轮最终回复。
+const roleLegendLabels = {
+  system: '系统指令',
+  developer: '开发者指令',
+  user: '用户 / 引导请求',
+  assistant: '模型消息',
+  tool: '仅工具结果',
+}
+
+// cat -n 风格输出只在展示层紧凑化：整段至少两行匹配 `^ *\d+\t` 时，
+// 解析为「行号列 + 正文列」两栏；否则返回 null，由调用方保持原样 <pre>。
+// 不改原字符串、日志或 fingerprint。
+const CATN_PATTERN = /^ *\d+\t/
+
+function catNTable(text) {
+  if (typeof text !== 'string') return null
+  const lines = text.split('\n')
+  const matched = lines.filter((line) => CATN_PATTERN.test(line)).length
+  if (matched < 2) return null
+  const fields = lines.map((line) => {
+    const match = line.match(CATN_PATTERN)
+    if (!match) return `<span class="catn-plain">${escapeHtml(line)}</span>`
+    return `<span class="catn-no">${escapeHtml(match[0].trim())}</span><span class="catn-text">${escapeHtml(line.slice(match[0].length))}</span>`
+  })
+  return `<div class="catn-table">${fields.join('')}</div>`
+}
+
+function renderConversationContent(content) {
+  if (typeof content !== 'string' || content === '') return null
+  const catn = catNTable(content)
+  if (catn) return catn
+  return `<pre class="conversation-content">${escapeHtml(content)}</pre>`
+}
+
+// 共用入口：先预计算「tool-call id → 该消息序号」映射，再逐条渲染。
+// 三个对话弹窗（候选 / 本次请求 / Anchor 只读）共用同一渲染器与语义。
+function conversationBlocks(messages, offset = 0) {
+  const list = Array.isArray(messages) ? messages : []
+  if (!list.length) return ''
+  const callToIndex = new Map()
+  let lastAssistantIndex = -1
+  const resultToIndex = new Map()
+  list.forEach((message, index) => {
+    if (message?.role === 'tool' && message?.tool_call_id) {
+      resultToIndex.set(String(message.tool_call_id), index)
+    }
+    if (message?.role !== 'assistant') return
+    lastAssistantIndex = index
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+      if (call?.id) callToIndex.set(String(call.id), index)
+    }
+  })
+  return list.map((message, index) => conversationBlock(message, index, {
+    offset,
+    callToIndex,
+    resultToIndex,
+    lastAssistantIndex,
+  })).join('')
+}
+
+function conversationBlock(message, index, context = {}) {
   const role = message?.role ?? 'unknown'
   const reasoning = typeof message?.reasoning_content === 'string' ? message.reasoning_content : ''
   const content = typeof message?.content === 'string' ? message.content
     : Array.isArray(message?.content) ? message.content.map((part) => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : JSON.stringify(part)).join('\n') : ''
   const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
-  const roleLabels = {
-    system: '系统指令',
-    developer: '开发者指令',
-    user: '用户',
-    assistant: '助手',
-    tool: '工具结果',
+  const offset = Number(context.offset ?? 0)
+  const number = index + 1 + offset
+  const isAssistant = role === 'assistant'
+  const isTool = role === 'tool'
+  const isFinalReply = isAssistant && index === context.lastAssistantIndex && !calls.length && Boolean(content)
+  const callIndex = context.callToIndex ?? new Map()
+  const metaSpans = []
+  if (isTool) {
+    const callId = String(message?.tool_call_id ?? '')
+    if (callId) metaSpans.push(`<span class="tool-call-ref">call id <code>${escapeHtml(callId)}</code></span>`)
+    const owner = callIndex.get(callId)
+    metaSpans.push(owner != null
+      ? `<span class="tool-call-ref">对应调用 #${owner + 1 + offset}</span>`
+      : '<span class="tool-call-ref">对应调用在会话更早部分，未在本次展示范围</span>')
   }
-  return `
-    <div class="conversation-item ${escapeHtml(role)}">
-      <div class="conversation-meta">
-        <b>#${index + 1} ${escapeHtml(roleLabels[role] ?? role)}</b>
-        ${calls.length ? `<span>${calls.map((call) => `${escapeHtml(call?.function?.name ?? 'tool')}(${escapeHtml(String(call?.function?.arguments ?? '').slice(0, 200))}${String(call?.function?.arguments ?? '').length > 200 ? '…' : ''})`).join(' · ')}</span>` : ''}
+  const sections = []
+  if (isAssistant) {
+    if (reasoning) {
+      sections.push(`<div class="conversation-section"><span class="conversation-section-label">思维链</span><pre class="conversation-reasoning">${escapeHtml(reasoning)}</pre></div>`)
+    }
+    if (content) {
+      sections.push(`<div class="conversation-section"><span class="conversation-section-label">正文</span>${renderConversationContent(content)}</div>`)
+    }
+    if (calls.length) {
+      sections.push(`<div class="conversation-section"><span class="conversation-section-label">工具调用${calls.length > 1 ? ` · ${calls.length} 个` : ''}</span><div class="tool-call-list">${calls.map((call) => {
+        const id = String(call?.id ?? '—')
+        const name = call?.function?.name ?? 'tool'
+        const args = String(call?.function?.arguments ?? '')
+        const argsPreview = args.length > 200 ? `${args.slice(0, 200)}…` : args
+        const responder = (context.resultToIndex ?? new Map()).get(id)
+        return `<div class="tool-call">
+          <div class="tool-call-head"><b>${escapeHtml(name)}</b><code>${escapeHtml(id)}</code></div>
+          <div class="tool-call-detail">${argsPreview ? `<span>参数 ${escapeHtml(argsPreview)}</span>` : ''}${responder != null ? `<span>→ 工具结果 #${responder + 1 + offset}</span>` : ''}</div>
+        </div>`
+      }).join('')}</div></div>`)
+    }
+    if (!sections.length) sections.push('<pre class="conversation-content muted">（空消息）</pre>')
+  } else {
+    const contentBlock = renderConversationContent(content)
+    if (contentBlock) sections.push(contentBlock)
+    else if (!reasoning && !calls.length) sections.push('<pre class="conversation-content muted">（空消息）</pre>')
+  }
+  const showFullMessage = Boolean(reasoning) || Boolean(content) ||
+    calls.some((call) => String(call?.function?.arguments ?? '').length > 0)
+  const fullMessageView = showFullMessage
+    ? `<details class="message-full-details">
+      <summary class="message-full-button">查看完整消息</summary>
+      <div class="message-full-body">
+        ${reasoning ? `<p class="message-full-label">思维链</p><pre class="conversation-reasoning">${escapeHtml(reasoning)}</pre>` : ''}
+        ${content ? `<p class="message-full-label">正文</p><pre class="conversation-content">${escapeHtml(content)}</pre>` : ''}
+        ${calls.length ? `<p class="message-full-label">工具调用 · ${calls.length}</p><div class="tool-call-list">${calls.map((call) => {
+          const id = String(call?.id ?? '—')
+          const name = call?.function?.name ?? 'tool'
+          const args = String(call?.function?.arguments ?? '')
+          return `<div class="tool-call">
+            <div class="tool-call-head"><b>${escapeHtml(name)}</b><code>${escapeHtml(id)}</code></div>
+            <pre class="conversation-content">${escapeHtml(args || '（无参数）')}</pre>
+          </div>`
+        }).join('')}</div>` : ''}
       </div>
-      ${reasoning ? `<pre class="conversation-reasoning">${escapeHtml(reasoning)}</pre>` : ''}
-      ${content ? `<pre class="conversation-content">${escapeHtml(content)}</pre>` : ''}
-      ${!reasoning && !content && !calls.length ? '<pre class="conversation-content muted">（空消息）</pre>' : ''}
+    </details>`
+    : ''
+  return `
+    <div class="conversation-item ${escapeHtml(role)} ${isFinalReply ? 'final' : ''}">
+      <div class="conversation-meta">
+        <b>#${number} ${escapeHtml(roleLegendLabels[role] ?? role)}${isFinalReply ? ' · 最终回复' : ''}</b>
+        ${metaSpans.join('')}
+      </div>
+      ${sections.join('')}
+      ${fullMessageView}
     </div>`
 }
 
@@ -954,8 +1475,8 @@ async function openCandidateConversation(jobId, candidateIndex) {
     const messages = Array.isArray(candidate.messages) ? candidate.messages : []
     const turns = Array.isArray(candidate.assistantTurns) ? candidate.assistantTurns : []
     elements.candidateDialogBody.innerHTML = `
-      <p class="candidate-dialog-stats">共 ${formatNumber(messages.length)} 条消息 · ${formatNumber(turns.length)} 个助手轮次 · ${formatNumber(candidate.usage?.totalTokens)} tokens · ${escapeHtml(stopReasonLabels[candidate.stopReason] ?? candidate.stopReason ?? '状态未知')}</p>
-      ${messages.map((message, index) => conversationBlock(message, index)).join('')}`
+      <p class="candidate-dialog-stats">共 ${formatNumber(messages.length)} 条消息 · ${formatNumber(turns.length)} 个助手轮次 · ${candidate.usage?.totalTokens != null ? `${formatNumber(candidate.usage.totalTokens)} tokens` : '—'} · ${escapeHtml(stopReasonLabels[candidate.stopReason] ?? candidate.stopReason ?? '状态未知')}</p>
+      ${conversationBlocks(messages)}`
   } catch (error) {
     elements.candidateDialogBody.innerHTML = `<p class="candidate-warning">无法加载完整对话：${escapeHtml(error.message)}</p>`
   }
@@ -984,14 +1505,21 @@ function renderLiveDialog() {
     </p>`).join('')
   const reasoning = live.reasoningTail || '（等待首段推理…）'
   const content = live.contentTail || '（暂无正文）'
+  // A: 直播弹窗只报上游返回的 token 分项；没有 usage 时只写「推理中」/「正文」。
+  const usage = live.usage
+  const liveReasoningTokens = usage?.reasoningTokens != null ? Number(usage.reasoningTokens) : null
+  const liveCompletionTokens = usage?.completionTokens != null ? Number(usage.completionTokens) : null
+  const liveContentTokens = liveCompletionTokens != null && liveReasoningTokens != null
+    ? Math.max(0, liveCompletionTokens - liveReasoningTokens)
+    : null
   elements.liveDialogBody.innerHTML = `
     ${completed ? `<div class="live-turns">${completed}</div>` : ''}
     <div class="live-stream-block">
-      <p class="live-stream-label"><span class="pulse-dot"></span>推理中 · ${formatNumber(live.reasoningChars)} 字符</p>
+      <p class="live-stream-label"><span class="pulse-dot"></span>${liveReasoningTokens != null ? `推理中 · ${formatNumber(liveReasoningTokens)} tokens` : '推理中'}</p>
       <pre class="conversation-reasoning">${escapeHtml(reasoning)}</pre>
     </div>
     <div class="live-stream-block">
-      <p class="live-stream-label">正文 · ${formatNumber(live.contentChars)} 字符</p>
+      <p class="live-stream-label">正文${liveContentTokens != null ? ` · ${formatNumber(liveContentTokens)} tokens` : ''}</p>
       <pre class="conversation-content">${escapeHtml(content)}</pre>
     </div>`
   const scroller = elements.liveDialogBody.querySelector('.conversation-reasoning')
@@ -1028,12 +1556,12 @@ function renderRequestMessages(entry) {
   const blocks = []
   if (inputMessages.length) {
     blocks.push('<p class="subheading">本次新增输入</p>')
-    inputMessages.forEach((message, index) => blocks.push(conversationBlock(message, index)))
+    blocks.push(conversationBlocks(inputMessages))
   }
   if (responseMessages.length) {
     const offset = inputMessages.length
     blocks.push('<p class="subheading">本次新回复</p>')
-    responseMessages.forEach((message, index) => blocks.push(conversationBlock(message, offset + index)))
+    blocks.push(conversationBlocks(responseMessages, offset))
   }
   elements.messagesDialogTitle.textContent = `本次输入与新回复 · ${escapeHtml(entry.request?.model ?? '')}`
   elements.messagesDialogBody.innerHTML = blocks.join('')
@@ -1087,6 +1615,8 @@ function renderAnchorView(anchor) {
   const usage = anchor.usage ?? {}
   const continuation = anchor.continuation ?? {}
   const messages = Array.isArray(anchor.messages) ? anchor.messages : []
+  const trajectoryStats = anchor.trajectoryStats ?? {}
+  const trajectoryReasoning = trajectoryStats.reasoning ?? {}
   const conversationComplete = messages.at(-1)?.role === 'assistant'
   const assistantTurns = Array.isArray(anchor.assistantTurns) ? anchor.assistantTurns : []
   const toolEvents = Array.isArray(anchor.toolEvents) ? anchor.toolEvents : []
@@ -1103,39 +1633,50 @@ function renderAnchorView(anchor) {
   const continuationText = String(continuation.message ?? '').trim()
   elements.anchorDialogTitle.textContent = `Anchor 只读查看 · ${anchor.model ?? '未知模型'}`
   elements.anchorDialogBody.innerHTML = `
+    ${messages.length
+      ? renderContextOccupancy({
+          usage,
+          messageCount: messages.length,
+          cot: trajectoryReasoning.cot ?? null,
+          markers: trajectoryReasoning.markers ?? null,
+        })
+      : ''}
+    <p class="subheading">生成统计 ${helpIcon('以下统计来自该 Artifact 保存时的生成记录；更早保存的 Artifact 若未以助手答复收尾，不补造助手答复。')}</p>
     <div class="basic-stats anchor-meta-stats">
-      <div class="basic-stat"><span>创建时间</span><b>${escapeHtml(formatTime(anchor.createdAt, true))}</b></div>
-      <div class="basic-stat"><span>类型</span><b>${anchor.bundledDefault ? '内置默认' : '已生成'}</b></div>
-      <div class="basic-stat"><span>绑定状态</span><b>${anchorIsBound(anchor) ? '当前绑定' : '未绑定'}</b></div>
-      <div class="basic-stat"><span>对话完整性</span><b>${conversationComplete ? '完整（助手答复收尾）' : '旧格式（非助手答复收尾）'}</b></div>
-      <div class="basic-stat"><span>推理强度</span><b>${escapeHtml(reasoningEffortLabels[requestSettings.reasoningEffort] ?? requestSettings.reasoningEffort ?? '—')}</b></div>
-      <div class="basic-stat"><span>最大输出</span><b>${requestSettings.maxTokens != null ? `${formatNumber(requestSettings.maxTokens)} tokens` : '—'}</b></div>
-      <div class="basic-stat"><span>消息数</span><b>${formatNumber(messages.length)}</b></div>
-      <div class="basic-stat"><span>助手轮次</span><b>${formatNumber(assistantTurns.length)}</b></div>
-      <div class="basic-stat"><span>工具事件</span><b>${formatNumber(toolEvents.length)}</b></div>
+      <div class="basic-stat"><span title="Artifact 保存时间；只读展示，不提供编辑">创建时间</span><b>${escapeHtml(formatTime(anchor.createdAt, true))}</b></div>
+      <div class="basic-stat"><span title="内置默认示例为模型专属默认（只读）；用户生成为 Builder 生成并保存">来源</span><b>${anchor.category === 'default' ? '内置默认示例' : anchor.category === 'control' ? '实验控制项' : '用户生成'}</b></div>
+      <div class="basic-stat"><span title="是否被某模型数据面当前绑定">绑定状态</span><b>${anchorIsBound(anchor) ? '当前绑定' : '未绑定'}</b></div>
+      <div class="basic-stat"><span title="以助手消息收尾则为完整；未以助手答复收尾的保存记录可能以工具结果收尾">对话完整性</span><b title="按现在的保存规则最后一条应是助手答复；这份是更早存的，最后一条不是。不补造 assistant。">${conversationComplete ? '完整（助手答复收尾）' : '未以助手答复收尾'}</b></div>
+      <div class="basic-stat"><span title="生成时请求的思考强度配置">推理强度</span><b>${escapeHtml(reasoningEffortLabels[requestSettings.reasoningEffort] ?? requestSettings.reasoningEffort ?? '—')}</b></div>
+      <div class="basic-stat"><span title="生成时请求的最大输出 token 上限">最大输出</span><b>${requestSettings.maxTokens != null ? `${formatNumber(requestSettings.maxTokens)} tokens` : '—'}</b></div>
+      <div class="basic-stat"><span title="完整消息条数">消息数</span><b>${formatNumber(messages.length)}</b></div>
+      <div class="basic-stat"><span title="生成轨迹中的助手轮次">助手轮次</span><b>${formatNumber(assistantTurns.length)}</b></div>
+      <div class="basic-stat"><span title="生成轨迹中的工具调用事件数">工具事件</span><b>${formatNumber(toolEvents.length)}</b></div>
     </div>
     <dl class="fact-list">
       <div><dt>指纹</dt><dd><code>${escapeHtml(anchor.fingerprint ?? '—')}</code></dd></div>
       <div><dt>目录路径</dt><dd><code>${escapeHtml(anchor.path ?? '—')}</code></dd></div>
     </dl>
+    <p class="subheading">token 统计 ${helpIcon('各字段来自保存时上游返回的用量；未返回的字段显示“—”，不推算。')}</p>
     <div class="basic-stats anchor-token-stats">
-      <div class="basic-stat"><span>输入 tokens</span><b>${usage.promptTokens != null ? formatNumber(usage.promptTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>输出 tokens</span><b>${usage.completionTokens != null ? formatNumber(usage.completionTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>推理 tokens</span><b>${usage.reasoningTokens != null ? formatNumber(usage.reasoningTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>正文 tokens</span><b>${contentTokens != null ? formatNumber(contentTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>缓存命中</span><b>${usage.cacheHitTokens != null ? formatNumber(usage.cacheHitTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>未缓存输入</span><b>${usage.cacheMissTokens != null ? formatNumber(usage.cacheMissTokens) : '—'}</b></div>
-      <div class="basic-stat"><span>缓存命中率</span><b>${formatPercent(cacheRate)}</b></div>
+      <div class="basic-stat"><span title="保存时上游返回的总 tokens">总 tokens</span><b>${usage.totalTokens != null ? formatNumber(usage.totalTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="本次上游请求的提示 tokens">输入 tokens</span><b>${usage.promptTokens != null ? formatNumber(usage.promptTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="本次上游请求的完成 tokens">输出 tokens</span><b>${usage.completionTokens != null ? formatNumber(usage.completionTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="输出中的推理 tokens">推理 tokens</span><b>${usage.reasoningTokens != null ? formatNumber(usage.reasoningTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="输出中推理之外的正文 tokens，由输出与推理相减得出">正文 tokens</span><b>${contentTokens != null ? formatNumber(contentTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="命中 Provider 缓存的提示 tokens">缓存命中</span><b>${usage.cacheHitTokens != null ? formatNumber(usage.cacheHitTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="未命中缓存的提示 tokens">未缓存输入</span><b>${usage.cacheMissTokens != null ? formatNumber(usage.cacheMissTokens) : '—'}</b></div>
+      <div class="basic-stat"><span title="缓存命中 / 提示总 tokens；缺失时不推算">缓存命中率</span><b>${formatPercent(cacheRate)}</b></div>
     </div>
     <p class="subheading">续接指令（continuation）</p>
     ${continuationText
       ? `<div class="continuation-block"><code>${escapeHtml(continuationModeLabels[continuation.mode] ?? continuation.mode ?? '—')}</code><pre class="conversation-content">${escapeHtml(continuationText)}</pre></div>`
       : '<p class="muted">未设置续接指令</p>'}
-    <p class="subheading">工具调用状态</p>
+    <p class="subheading">工具调用状态 ${helpIcon('仅表示生成轨迹中是否完成对应调用，不代表质量判定。')}</p>
     ${renderAnchorToolStatus(anchor)}
-    <p class="subheading">完整消息（推理 / 正文 / 工具调用 / 工具结果）</p>
+    <p class="subheading">完整消息（思维链 / 正文 / 工具调用 / 工具结果）</p>
     ${messages.length
-      ? messages.map((message, index) => conversationBlock(message, index)).join('')
+      ? conversationBlocks(messages)
       : '<p class="muted">该 Artifact 没有消息可展示</p>'}`
 }
 
@@ -1159,10 +1700,48 @@ async function openAnchorView(anchorPath, anchorId) {
 elements.anchorDialogClose.addEventListener('click', () => elements.anchorDialog.close())
 
 elements.anchorList.addEventListener('click', (event) => {
+  const deleteButton = event.target.closest('[data-delete-anchor-path]')
+  if (deleteButton) {
+    void deleteAnchorArtifact(
+      deleteButton.dataset.deleteAnchorPath ?? '',
+      deleteButton.dataset.deleteAnchorId ?? '',
+    )
+    return
+  }
   const button = event.target.closest('[data-view-anchor-path]')
   if (!button) return
   void openAnchorView(button.dataset.viewAnchorPath ?? '', button.dataset.viewAnchorId ?? '')
 })
+
+async function deleteAnchorArtifact(path, id) {
+  const artifact = (state.anchorCatalog ?? []).find((entry) => (
+    (path && entry.path === path) || (!path && id && entry.id === id)
+  )) ?? { path, id }
+  const name = artifact.displayName ?? artifact.id ?? '未命名'
+  if (!window.confirm(`确认删除 Anchor「${name}」？删除后不可恢复。`)) return
+  try {
+    await fetchJson('/__gateway/anchors', {
+      method: 'DELETE',
+      body: path ? { path } : { id },
+    })
+    toast('Anchor 已删除')
+    // 全量重绘：catalog 不在 dataFingerprint 里，quiet 刷新不会重画配置表的
+    // Anchor 选项；这里 force 一次并把缓存指纹重置，列表与配置表都更新。
+    await loadData({ quiet: false, force: true })
+  } catch (error) {
+    if (error.status === 409) {
+      // 服务端明确拒绝：显示具体引用的模型平面，要求先换绑定；不自动解绑。
+      const refs = Array.isArray(error.payload?.error?.referencedBy)
+        ? error.payload.error.referencedBy
+        : []
+      toast(refs.length
+        ? `无法删除：该 Anchor 正被 ${refs.map(microProfileLabel).join('、')} 使用，请先在这些模型切换到其他 Anchor。`
+        : `无法删除：${error.message}`)
+      return
+    }
+    toast(`删除失败：${error.message}`)
+  }
+}
 
 elements.anchorJobs.addEventListener('click', (event) => {
   const viewLive = event.target.closest('[data-view-live]')
@@ -1177,28 +1756,502 @@ elements.anchorJobs.addEventListener('click', (event) => {
   }
   const selectButton = event.target.closest('[data-select-candidate]')
   if (selectButton) {
-    void pickJobAction(selectButton, 'select')
+    openSelectDialog(selectButton.dataset.selectCandidate, selectButton.dataset.candidateIndex)
+    return
+  }
+  const activateButton = event.target.closest('[data-activate-job]')
+  if (activateButton) {
+    void pickJobAction(activateButton, 'activate')
     return
   }
   const discardButton = event.target.closest('[data-discard-job]')
   if (discardButton) void pickJobAction(discardButton, 'discard')
 })
 
+function renderAnchorExampleButton() {
+  const profileName = elements.anchorProfile.value
+  const profile = (state.config?.profiles ?? []).find((item) => item.name === profileName)
+  const model = profile?.model
+  // 只从 catalog 取该模型的 default；没有则禁用，禁止退回 Pro/control。
+  const example = model
+    ? state.anchorCatalog.find((artifact) =>
+        artifact.model === model &&
+        artifact.category === 'default' &&
+        artifact.selectable !== false &&
+        !artifact.copiedBaseline)
+    : null
+  elements.anchorExample.disabled = !example
+  elements.anchorExample.textContent = example ? '查看该模型示例 Anchor' : '尚无模型原生示例'
+  elements.anchorExample.dataset.anchorPath = example?.path ?? ''
+  elements.anchorExample.dataset.anchorId = example?.id ?? ''
+}
+
+// ---------- D: 微锚点独立管理 UI ----------
+// 微锚点是附加到每次第三方历史 user 消息末尾的短文本，是对模型配置里
+// 的「增强模式 / Anchor Artifact」之外的独立开关；页面一律不称 continuation。
+const MICRO_ANCHOR_CACHE_WARNING =
+  '修改微锚内容、切换所选微锚或切换微锚开关会改变当前会话的请求历史，并可能导致 KV Cache 重新计算。Gateway 不会清除 Provider 侧缓存；恢复到此前的微锚点状态后，如果其他请求输入也一致，Provider 仍可能复用此前缓存。'
+const MICRO_PROFILE_LABELS = {
+  pro: 'Pro',
+  flash: 'Flash',
+  vision: 'Vision',
+  combined: '多模型路由口',
+  single: '多模型路由口',
+}
+const MICRO_ANCHOR_CONTENT_PREVIEW_LIMIT = 160
+
+function microAnchorCacheWarning() {
+  return state.microAnchors?.cacheWarning || MICRO_ANCHOR_CACHE_WARNING
+}
+
+function microProfileLabel(name) {
+  return MICRO_PROFILE_LABELS[name] ?? name ?? '—'
+}
+
+function microAnchorProfileTitle(name) {
+  const profile = (state.config?.profiles ?? []).find((item) => item.name === name)
+  return profile
+    ? `${microProfileLabel(name)} · ${profile.model}`
+    : microProfileLabel(name)
+}
+
+// 与服务端正文规范化一致：仅把 CRLF 统一为 LF（trim/长度由服务端执行，
+// 这里只用于判断“字节等价”，不改变比较结果）。
+function normalizeMicroAnchorContentForCompare(value) {
+  return String(value ?? '').replace(/\r\n/g, '\n')
+}
+
+function microAnchorDefinitionById(id) {
+  return (state.microAnchors?.definitions ?? []).find((definition) => definition.id === id) ?? null
+}
+
+function microAnchorApplyState(name) {
+  // 微锚修改走进程内热应用（restartRequired=false 时服务端返回 applied）；
+  // 只在服务端明确要求重启时才显示“重启后生效”。
+  return state.microAnchorApply[name] ?? 'applied'
+}
+
+function microAnchorMutationNote(result) {
+  const affected = Array.isArray(result?.affectedProfiles) ? result.affectedProfiles : []
+  if (result?.restartRequired) return '已保存，重启后生效。'
+  if (!affected.length) return '已保存，未改变任何模型的生效设定。'
+  return `已应用：${affected.map(microProfileLabel).join('、')}。`
+}
+
+function applyMicroAnchorMutation(result) {
+  const view = result?.documentView?.microAnchors ?? result?.microAnchors
+  if (view) state.microAnchors = view
+  // PATCH profile 响应带独立的 profile 视图（含 running 等实时字段），
+  // merge 回现有列表以免丢失运行状态。
+  if (result?.profile && Array.isArray(state.config?.profiles)) {
+    state.config = {
+      ...(state.config ?? {}),
+      profiles: state.config.profiles.map((item) => (
+        item.name === result.profile.name ? { ...item, ...result.profile } : item
+      )),
+    }
+  }
+  state.microAnchorApply = {}
+  for (const name of Array.isArray(result?.affectedProfiles) ? result.affectedProfiles : []) {
+    state.microAnchorApply[name] = result.restartRequired ? 'pending' : 'applied'
+  }
+  const note = microAnchorMutationNote(result)
+  elements.microAnchorApplyNote.textContent = note
+  elements.microAnchorApplyNote.hidden = false
+  renderMicroAnchors()
+}
+
+function renderMicroAnchorReferencedBy(definition) {
+  const refs = Array.isArray(definition.referencedBy) ? definition.referencedBy : []
+  if (!refs.length) return '<span class="muted">未被引用</span>'
+  return `被引用：<b>${refs.map(microProfileLabel).join('、')}</b>`
+}
+
+function microAnchorContentPreview(content) {
+  const text = String(content ?? '')
+  return text.length > MICRO_ANCHOR_CONTENT_PREVIEW_LIMIT
+    ? `${text.slice(0, MICRO_ANCHOR_CONTENT_PREVIEW_LIMIT)}…`
+    : text
+}
+
+function renderMicroAnchorDefinitionCard(definition) {
+  const builtin = definition.source === 'builtin' || definition.readonly
+  const refs = renderMicroAnchorReferencedBy(definition)
+  const fingerprint = definition.contentFingerprint
+    ? `<code class="micro-anchor-fingerprint" title="${escapeHtml(definition.contentFingerprint)}">SHA-256 ${escapeHtml(shortId(definition.contentFingerprint, 20))}</code>`
+    : '<code class="micro-anchor-fingerprint muted">SHA-256 —</code>'
+  if (builtin) {
+    // 默认卡：锁定/内置徽标、完整只读正文、内容指纹、引用模型、“复制为自定义”。
+    return `
+      <div class="micro-anchor-card builtin">
+        <div class="micro-anchor-card-head">
+          <strong>${escapeHtml(definition.name)}</strong>
+          <span class="anchor-badges">
+            <span class="anchor-badge default" title="内置默认微锚点，不可编辑或删除">内置 · 锁定</span>
+          </span>
+        </div>
+        <pre class="micro-anchor-content">${escapeHtml(definition.content)}</pre>
+        <div class="micro-anchor-card-meta">
+          ${fingerprint}
+          <span>${refs}</span>
+        </div>
+        <div class="micro-anchor-card-actions">
+          <button class="button ghost" type="button" data-micro-anchor-copy="${escapeHtml(definition.id)}">复制为自定义</button>
+        </div>
+      </div>`
+  }
+  const preview = microAnchorContentPreview(definition.content)
+  const truncated = String(definition.content ?? '').length > MICRO_ANCHOR_CONTENT_PREVIEW_LIMIT
+  return `
+    <div class="micro-anchor-card">
+      <div class="micro-anchor-card-head">
+        <strong>${escapeHtml(definition.name)}</strong>
+        <span class="anchor-badges">
+          <span class="anchor-badge generated" title="用户创建或从默认项复制，可编辑删除">自定义</span>
+        </span>
+      </div>
+      <pre class="micro-anchor-preview">${escapeHtml(preview)}${truncated ? '<span class="micro-anchor-preview-more">（已截断，点“只读查看”看完整正文）</span>' : ''}</pre>
+      <div class="micro-anchor-card-meta">
+        ${fingerprint}
+        <span>${refs}</span>
+      </div>
+      <div class="micro-anchor-card-actions">
+        <button class="button ghost" type="button" data-micro-anchor-view="${escapeHtml(definition.id)}">只读查看</button>
+        <button class="button ghost" type="button" data-micro-anchor-edit="${escapeHtml(definition.id)}">编辑</button>
+        <button class="button danger" type="button" data-micro-anchor-delete="${escapeHtml(definition.id)}">删除</button>
+      </div>
+    </div>`
+}
+
+function renderMicroAnchorDefinitions() {
+  const definitions = Array.isArray(state.microAnchors?.definitions)
+    ? state.microAnchors.definitions
+    : []
+  if (!definitions.length) {
+    elements.microAnchorDefinitions.innerHTML =
+      '<p class="muted">当前没有微锚点；默认项会在 Gateway 可用后返回。</p>'
+    return
+  }
+  elements.microAnchorDefinitions.innerHTML = definitions
+    .map(renderMicroAnchorDefinitionCard)
+    .join('')
+}
+
+function renderMicroAnchorProfiles() {
+  const profiles = state.microAnchors?.profiles ?? {}
+  const names = ['pro', 'flash', 'vision'].filter((name) => profiles[name])
+  if (!names.length) {
+    elements.microAnchorProfiles.innerHTML = '<p class="muted">当前服务未提供微锚点模型配置。</p>'
+    return
+  }
+  const definitions = Array.isArray(state.microAnchors?.definitions)
+    ? state.microAnchors.definitions
+    : []
+  elements.microAnchorProfiles.innerHTML = names.map((name) => {
+    const selection = profiles[name] ?? {}
+    const apply = microAnchorApplyState(name)
+    const options = definitions.map((definition) => `
+      <option value="${escapeHtml(definition.id)}" ${definition.id === selection.selectedId ? 'selected' : ''}>
+        ${escapeHtml(definition.name)}${definition.source === 'builtin' ? ' · 内置' : ''}
+      </option>`).join('')
+    return `
+      <form class="micro-anchor-profile" data-micro-anchor-profile="${escapeHtml(name)}">
+        <div class="micro-anchor-profile-head">
+          <strong>${escapeHtml(microAnchorProfileTitle(name))}</strong>
+          <span class="micro-anchor-state ${apply}">${apply === 'pending' ? '重启后生效' : '已应用'}</span>
+        </div>
+        <label class="toggle-field wide">
+          <input name="enabled" type="checkbox" ${selection.enabled ? 'checked' : ''}>
+          <span>启用微锚点</span>
+        </label>
+        <label>
+          <span>保存项${helpIcon('每个模型选择要使用的微锚点定义；关闭开关时不注入任何微锚点文本。')}</span>
+          <select name="selectedId">${options}</select>
+        </label>
+        <div class="micro-anchor-effective">
+          <span>生效指纹${helpIcon('启用时是指将追加到该模型每条第三方 user 消息的正文指纹；关闭时无生效文本。')}</span>
+          <code class="${selection.enabled && selection.effectiveFingerprint ? '' : 'muted'}" title="${escapeHtml(selection.effectiveFingerprint ?? '')}">${selection.enabled && selection.effectiveFingerprint ? escapeHtml(shortId(selection.effectiveFingerprint, 16)) : '未启用'}</code>
+        </div>
+        <button class="button secondary" type="submit">保存应用</button>
+      </form>`
+  }).join('')
+}
+
+function renderMicroAnchors() {
+  const warning = microAnchorCacheWarning()
+  if (elements.microAnchorWarning.textContent !== warning) {
+    elements.microAnchorWarning.textContent = warning
+  }
+  renderMicroAnchorDefinitions()
+  renderMicroAnchorProfiles()
+}
+
+function openMicroAnchorView(id) {
+  const definition = microAnchorDefinitionById(id)
+  if (!definition) {
+    toast('找不到该微锚点')
+    return
+  }
+  elements.microAnchorViewTitle.textContent = `微锚点 · ${definition.name}`
+  elements.microAnchorViewBody.innerHTML = `
+    <dl class="fact-list">
+      <div><dt>名称</dt><dd>${escapeHtml(definition.name)}</dd></div>
+      <div><dt>来源</dt><dd>${definition.source === 'builtin' ? '内置默认（只读）' : '自定义'}</dd></div>
+      <div><dt>内容指纹</dt><dd><code>${escapeHtml(definition.contentFingerprint ?? '—')}</code></dd></div>
+      <div><dt>引用</dt><dd>${escapeHtml((definition.referencedBy ?? []).map(microProfileLabel).join('、') || '—')}</dd></div>
+    </dl>
+    <p class="subheading">完整正文</p>
+    <pre class="micro-anchor-content">${escapeHtml(definition.content)}</pre>`
+  elements.microAnchorViewDialog.showModal()
+}
+
+function microAnchorDialogModeTitle(mode) {
+  if (mode === 'edit') return '编辑微锚点'
+  if (mode === 'copy') return '复制默认微锚点'
+  return '新建微锚点'
+}
+
+function openMicroAnchorDialog(mode, id = null) {
+  if (elements.microAnchorDialog.open) return
+  const definition = id ? microAnchorDefinitionById(id) : null
+  state.microAnchorDialogState = { mode, id: definition?.id ?? null }
+  elements.microAnchorDialogTitle.textContent = microAnchorDialogModeTitle(mode)
+  elements.microAnchorDialogError.hidden = true
+  elements.microAnchorDialogError.textContent = ''
+  elements.microAnchorDialogSubmit.disabled = false
+  elements.microAnchorName.value = mode === 'edit' ? (definition?.name ?? '') : ''
+  elements.microAnchorContent.value = mode === 'edit' ? (definition?.content ?? '') : ''
+  if (mode === 'edit' && definition) {
+    const refs = Array.isArray(definition.referencedBy) ? definition.referencedBy : []
+    const enabledRefs = refs.filter((name) => state.microAnchors?.profiles?.[name]?.enabled)
+    elements.microAnchorDialogNote.textContent = enabledRefs.length
+      ? `正文将写入该定义；当前正被 ${enabledRefs.map(microProfileLabel).join('、')} 使用，保存后这些模型将使用新正文。`
+      : '编辑只改动定义本身；当前没有启用它的模型，保存后不影响任何请求历史。'
+  } else if (mode === 'copy') {
+    elements.microAnchorDialogNote.textContent =
+      '正文将由服务端从默认微锚点读取并保存，页面不提交正文副本（正文以默认项为准）。'
+  } else {
+    elements.microAnchorDialogNote.textContent =
+      '名称 1–80 字符且全局唯一；正文最多 4000 字符，保存后可用于任意模型。'
+  }
+  elements.microAnchorContentField.hidden = mode === 'copy'
+  elements.microAnchorDialog.showModal()
+  elements.microAnchorName.focus()
+}
+
+async function deleteMicroAnchor(id) {
+  const definition = microAnchorDefinitionById(id)
+  if (!definition) return
+  if (!window.confirm(`确认删除微锚点「${definition.name}」？删除后不可恢复。`)) return
+  try {
+    const result = await fetchJson(
+      `/__gateway/micro-anchors/${encodeURIComponent(id)}`,
+      { method: 'DELETE', body: {} },
+    )
+    applyMicroAnchorMutation(result)
+    toast('微锚点已删除')
+  } catch (error) {
+    if (error.status === 409) {
+      // 服务端明确拒绝：显示具体引用模型，要求先切换；不自动回落默认。
+      const refs = Array.isArray(error.payload?.error?.referencedBy)
+        ? error.payload.error.referencedBy
+        : []
+      toast(refs.length
+        ? `无法删除：该微锚点正被 ${refs.map(microProfileLabel).join('、')} 使用，请先在这些模型切换到其他保存项。`
+        : `无法删除：${error.message}`)
+      return
+    }
+    toast(`删除失败：${error.message}`)
+  }
+}
+
+async function saveMicroAnchorProfile(form) {
+  const name = form.dataset.microAnchorProfile
+  const selection = state.microAnchors?.profiles?.[name] ?? {}
+  const enabled = form.querySelector('input[name="enabled"]').checked
+  const selectedId = form.querySelector('select[name="selectedId"]').value
+  if (enabled === Boolean(selection.enabled) && selectedId === selection.selectedId) return
+  const nextDefinition = microAnchorDefinitionById(selectedId)
+  // “有效文本”比较：只需判断启用时的正文指纹是否变化；相同指纹（含字节
+  // 等价的另一保存项、或开关前后都未启用）不误报缓存失效。
+  const oldFingerprint = selection.enabled ? selection.effectiveFingerprint ?? null : null
+  const nextFingerprint = enabled ? nextDefinition?.contentFingerprint ?? null : null
+  if (oldFingerprint !== nextFingerprint) {
+    const ok = window.confirm(
+      `${microAnchorCacheWarning()}\n\n将更新 ${microProfileLabel(name)} 的微锚点设置。确定继续吗？`,
+    )
+    if (!ok) return
+  }
+  const submit = form.querySelector('button[type="submit"]')
+  submit.disabled = true
+  try {
+    const result = await fetchJson(
+      `/__gateway/config/profiles/${encodeURIComponent(name)}`,
+      {
+        method: 'PATCH',
+        body: { microAnchor: { enabled: Boolean(enabled), selectedId } },
+      },
+    )
+    applyMicroAnchorMutation(result)
+    toast(result.restartRequired
+      ? `${microProfileLabel(name)} 微锚点已保存，重启后生效`
+      : `${microProfileLabel(name)} 微锚点已保存并应用`)
+  } catch (error) {
+    toast(`${microProfileLabel(name)} 微锚点保存失败：${error.message}`)
+    submit.disabled = false
+  }
+}
+
 function renderAnchorControls() {
   const profiles = state.config?.profiles ?? []
   const previous = elements.anchorProfile.value
-  elements.anchorProfile.innerHTML = profiles.map((profile) => `
+  // 缺 Key 的项 disabled 并标注；若没有可选配置，加占位项避免空白 select。
+  const selectable = profiles.filter((profile) => profile.apiKeyConfigured)
+  const options = profiles.map((profile) => `
     <option value="${escapeHtml(profile.name)}" ${!profile.apiKeyConfigured ? 'disabled' : ''}>
       ${escapeHtml(profile.name.toUpperCase())} · ${escapeHtml(profile.model)}${!profile.apiKeyConfigured ? '（缺少 Key）' : !profile.enabled ? '（未启用，可先生成）' : ''}
     </option>`).join('')
+  elements.anchorProfile.innerHTML = `${selectable.length
+    ? ''
+    : '<option value="" disabled selected>无可选生成目标（目标模型缺少 Key）</option>'}${options}`
   if (profiles.some((profile) => profile.name === previous && profile.apiKeyConfigured)) {
     elements.anchorProfile.value = previous
   }
   const submit = elements.anchorForm.querySelector('button[type="submit"]')
   submit.disabled = !elements.anchorProfile.value || state.jobs.some((job) =>
     ['queued', 'running'].includes(job.status) && job.profile === elements.anchorProfile.value)
+  renderAnchorExampleButton()
   renderAnchorJobs()
 }
+
+elements.anchorExample.addEventListener('click', () => {
+  const path = elements.anchorExample.dataset.anchorPath
+  const id = elements.anchorExample.dataset.anchorId
+  if (!path && !id) {
+    toast('当前模型没有原生示例 Anchor')
+    return
+  }
+  void openAnchorView(path, id)
+})
+
+// ---------- D: 微锚点管理交互 ----------
+elements.microAnchorCreate.addEventListener('click', () => openMicroAnchorDialog('create'))
+
+elements.microAnchorDefinitions.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-micro-anchor-copy], [data-micro-anchor-edit], [data-micro-anchor-delete], [data-micro-anchor-view]')
+  if (!button) return
+  if (button.dataset.microAnchorCopy) {
+    openMicroAnchorDialog('copy', button.dataset.microAnchorCopy)
+    return
+  }
+  if (button.dataset.microAnchorEdit) {
+    openMicroAnchorDialog('edit', button.dataset.microAnchorEdit)
+    return
+  }
+  if (button.dataset.microAnchorDelete) {
+    void deleteMicroAnchor(button.dataset.microAnchorDelete)
+    return
+  }
+  if (button.dataset.microAnchorView) {
+    openMicroAnchorView(button.dataset.microAnchorView)
+  }
+})
+
+elements.microAnchorProfiles.addEventListener('submit', (event) => {
+  const form = event.target.closest('form[data-micro-anchor-profile]')
+  if (!form) return
+  event.preventDefault()
+  void saveMicroAnchorProfile(form)
+})
+
+elements.microAnchorDialogClose.addEventListener('click', () => {
+  elements.microAnchorDialog.close()
+  state.microAnchorDialogState = null
+})
+elements.microAnchorDialogCancel.addEventListener('click', () => {
+  elements.microAnchorDialog.close()
+  state.microAnchorDialogState = null
+})
+
+elements.microAnchorForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const dialogState = state.microAnchorDialogState
+  if (!dialogState) return
+  elements.microAnchorDialogError.hidden = true
+  elements.microAnchorDialogError.textContent = ''
+  const name = elements.microAnchorName.value.trim()
+  if (name.length < 1 || name.length > 80) {
+    elements.microAnchorDialogError.textContent = '名称必须为 1–80 个字符（首尾空白会被忽略）。'
+    elements.microAnchorDialogError.hidden = false
+    return
+  }
+  const submit = elements.microAnchorDialogSubmit
+  submit.disabled = true
+  try {
+    if (dialogState.mode === 'edit') {
+      const definition = microAnchorDefinitionById(dialogState.id)
+      const content = elements.microAnchorContent.value
+      if (content.trim() === '') {
+        elements.microAnchorDialogError.textContent = '正文不能为空（首尾空白会被忽略）。'
+        elements.microAnchorDialogError.hidden = false
+        submit.disabled = false
+        return
+      }
+      // 编辑正在使用的自定义项：若启用该定义的模型会看到不同有效文本，
+      // 保存前显示统一缓存警告；正文字节等价时不误报。
+      const refs = Array.isArray(definition?.referencedBy) ? definition.referencedBy : []
+      const enabledRefs = refs.filter((profileName) =>
+        state.microAnchors?.profiles?.[profileName]?.enabled)
+      const bytesChanged = normalizeMicroAnchorContentForCompare(content) !==
+        normalizeMicroAnchorContentForCompare(definition?.content)
+      if (enabledRefs.length > 0 && bytesChanged) {
+        const ok = window.confirm(
+          `${microAnchorCacheWarning()}\n\n将更新正被 ${enabledRefs.map(microProfileLabel).join('、')} 使用的微锚点。确定继续吗？`,
+        )
+        if (!ok) {
+          submit.disabled = false
+          return
+        }
+      }
+      const result = await fetchJson(
+        `/__gateway/micro-anchors/${encodeURIComponent(dialogState.id)}`,
+        { method: 'PATCH', body: { name, content } },
+      )
+      applyMicroAnchorMutation(result)
+      toast('微锚点已保存')
+    } else {
+      const body = dialogState.mode === 'copy'
+        ? { name, copyFromId: dialogState.id }
+        : { name, content: elements.microAnchorContent.value }
+      if (dialogState.mode !== 'copy' && String(body.content ?? '').trim() === '') {
+        elements.microAnchorDialogError.textContent = '正文不能为空（首尾空白会被忽略）。'
+        elements.microAnchorDialogError.hidden = false
+        submit.disabled = false
+        return
+      }
+      const result = await fetchJson('/__gateway/micro-anchors', {
+        method: 'POST',
+        body,
+      })
+      applyMicroAnchorMutation(result)
+      toast(dialogState.mode === 'copy' ? '已复制为自定义微锚点' : '微锚点已创建')
+    }
+    elements.microAnchorDialog.close()
+    state.microAnchorDialogState = null
+  } catch (error) {
+    if (error.status === 409 || error.status === 400) {
+      elements.microAnchorDialogError.textContent = error.message
+      elements.microAnchorDialogError.hidden = false
+    } else {
+      toast(`保存失败：${error.message}`)
+    }
+    submit.disabled = false
+  }
+})
+
+elements.microAnchorViewClose.addEventListener('click', () => {
+  elements.microAnchorViewDialog.close()
+})
 
 function renderConfig() {
   const health = state.health
@@ -1211,18 +2264,25 @@ function renderConfig() {
       <div><dt>部署模式</dt><dd>父子进程 · WebUI 管理父进程监管 ${instances.map((instance) => escapeHtml(instance.profile.toUpperCase())).join('、')} 数据子进程</dd></div>
       ${instances.map((instance) => `
         <div><dt>${escapeHtml(instance.profile)} 数据面</dt><dd>${escapeHtml(instance.baseUrl)} · 子进程 PID ${escapeHtml(instance.processId ?? '—')}</dd></div>
-        <div><dt>${escapeHtml(instance.profile)} Key</dt><dd>${instance.gatewayApiKeyConfigured ? `${instance.gatewayApiKeySource === 'shared-fallback' ? '继承共享 Key' : '独立 Key'} · ${escapeHtml(instance.gatewayApiKeyPreview ?? '已配置')}` : '未配置 · 该端口不可用'}</dd></div>
+        <div><dt>${escapeHtml(instance.profile)} Key</dt><dd>${instance.gatewayApiKeyConfigured ? `已配置 · ${escapeHtml(instance.gatewayApiKeyPreview ?? '已配置')}` : '未配置 · 该端口不可用'}</dd></div>
       `).join('')}
       <div><dt>凭据策略</dt><dd>${escapeHtml(health.credentialPolicy ?? 'gateway-only')}</dd></div>
       <div><dt>版本</dt><dd>v${escapeHtml(health.version ?? '—')}</dd></div>`
     return
   }
+  const planes = Array.isArray(health.planes) ? health.planes : []
+  const planeFacts = planes.length
+    ? planes.map((plane) => `
+        <div><dt>${escapeHtml(plane.name || plane.model)} 上游</dt><dd>${escapeHtml(plane.upstreamBaseUrl ?? '—')}</dd></div>
+        <div><dt>${escapeHtml(plane.name || plane.model)} Key</dt><dd>${plane.gatewayApiKeyConfigured ? '已配置' : '未配置'}</dd></div>`).join('')
+    : `
+        <div><dt>上游地址</dt><dd>${escapeHtml(health.upstreamBaseUrl ?? '—')}</dd></div>
+        <div><dt>Gateway Key</dt><dd>${health.gatewayApiKeyConfigured ? '已配置' : '未配置 · 数据面不可用'}</dd></div>`
   elements.configList.innerHTML = `
-    <div><dt>上游地址</dt><dd>${escapeHtml(health.upstreamBaseUrl)}</dd></div>
+    ${planeFacts}
     <div><dt>采集模式</dt><dd>${escapeHtml(health.captureMode)}</dd></div>
     <div><dt>管理鉴权</dt><dd>${health.managementAuthRequired ? '已启用' : '仅本机免令牌'}</dd></div>
     <div><dt>凭据策略</dt><dd>${escapeHtml(health.credentialPolicy ?? 'gateway-only')}</dd></div>
-    <div><dt>Gateway Key</dt><dd>${health.gatewayApiKeyConfigured ? '已配置 · 唯一上游凭据' : '未配置 · 数据面不可用'}</dd></div>
     <div><dt>观测上限</dt><dd>${formatNumber(health.responseObservationLimitBytes)} bytes</dd></div>
     <div><dt>版本</dt><dd>v${escapeHtml(health.version ?? '—')}</dd></div>`
 }
@@ -1236,10 +2296,54 @@ function renderAll() {
   renderRows()
   renderDetail()
   renderAnchors()
+  renderMicroAnchors()
   renderDeployment()
   renderProfiles()
   renderAnchorControls()
   renderConfig()
+}
+
+// A: 编辑焦点所在的表单容器；焦点在其中时绝不重建对应表格。
+const mutableFormSelector =
+  '#profile-list, #deployment-form, .micro-anchor-profiles, .micro-anchor-definitions'
+
+function focusInMutableForms() {
+  const active = document.activeElement
+  if (!active || typeof active.closest !== 'function') return false
+  return Boolean(active.closest(mutableFormSelector))
+}
+
+function dataFingerprint() {
+  return JSON.stringify({
+    deployment: state.config?.deployment ?? null,
+    profiles: state.config?.profiles ?? null,
+    microAnchors: state.microAnchors ?? null,
+    deploymentMode: state.health?.deploymentMode ?? null,
+  })
+}
+
+// A: quiet 刷新下仅在数据指纹变化且焦点不在这些表单内时重绘；
+// 焦点被占用时指纹不提交，用户离开表单后的下一次 tick 会补上。
+function renderMutablePanelsIfChanged() {
+  const fingerprint = dataFingerprint()
+  if (fingerprint === state.configFingerprint) return
+  if (focusInMutableForms()) return
+  state.configFingerprint = fingerprint
+  renderProfiles()
+  renderDeployment()
+  renderMicroAnchors()
+  renderConfig()
+}
+
+// A: 自动轮询 / visibilitychange 的 quiet 刷新只更新展示面板与 jobs；
+// 模型独立配置等可编辑面板走 renderMutablePanelsIfChanged 条件重绘。
+function renderQuiet() {
+  renderMetrics()
+  renderRows()
+  renderDetail()
+  renderAnchors()
+  renderAnchorJobs()
+  renderMutablePanelsIfChanged()
 }
 
 async function loadData({ quiet = false, force = false } = {}) {
@@ -1249,18 +2353,20 @@ async function loadData({ quiet = false, force = false } = {}) {
   if (!quiet) setConnection('waiting', '正在连接')
   elements.refreshButton.disabled = true
   try {
-    const [health, diagnostics, config, jobs, anchorCatalog] = await Promise.all([
+    const [health, diagnostics, config, jobs, anchorCatalog, microAnchors] = await Promise.all([
       fetchJson('/__gateway/health'),
       fetchJson('/__gateway/diagnostics?limit=500'),
       fetchOptionalJson('/__gateway/config', { profiles: [] }),
       fetchOptionalJson('/__gateway/anchors/jobs', { jobs: [] }),
       fetchOptionalJson('/__gateway/anchors', { anchors: [] }),
+      fetchOptionalJson('/__gateway/micro-anchors', { cacheWarning: '', definitions: [], profiles: {} }),
     ])
     if (epoch !== loadEpoch) return
     state.health = health
     state.config = config
     state.jobs = Array.isArray(jobs.jobs) ? jobs.jobs : []
     state.anchorCatalog = Array.isArray(anchorCatalog.anchors) ? anchorCatalog.anchors : []
+    state.microAnchors = microAnchors.microAnchors ?? microAnchors
     state.entries = Array.isArray(diagnostics.entries) ? diagnostics.entries : []
     state.retained = Number(diagnostics.retained ?? state.entries.length)
     state.markerProfile = diagnostics.markerProfile ?? health.trajectoryMarkerProfile ?? null
@@ -1277,7 +2383,13 @@ async function loadData({ quiet = false, force = false } = {}) {
           : '部分数据面缺少 Key',
     )
     elements.lastUpdated.textContent = `最后刷新 ${formatTime(new Date().toISOString())}`
-    renderAll()
+    if (force || !quiet) {
+      // 手动刷新 / 保存成功 / force：完整重绘，可编辑面板无条件刷新。
+      renderAll()
+      state.configFingerprint = dataFingerprint()
+    } else {
+      renderQuiet()
+    }
   } catch (error) {
     if (epoch !== loadEpoch) return
     if (error.status === 401) {
@@ -1352,7 +2464,8 @@ elements.profileList.addEventListener('submit', async (event) => {
       body: patch,
     })
     toast(`${form.dataset.profile.toUpperCase()} 配置已保存并生效`)
-    await loadData({ quiet: true })
+    // 保存成功走完整重绘：新配置必须立即落进表单与配置面板。
+    await loadData({ quiet: true, force: true })
   } catch (error) {
     toast(`保存失败：${error.message}`)
     submit.disabled = false
@@ -1404,7 +2517,9 @@ elements.anchorForm.addEventListener('submit', async (event) => {
   const maxSubturns = Number(elements.anchorSubturns.value)
   const maxTokens = Number(elements.anchorMaxTokens.value)
   const anchorPrompt = elements.anchorPrompt.value.trim()
-  const continuationMessage = elements.anchorContinuation.value.trim()
+  // 原样提交：空 textarea 传显式空字符串（""），不 omit；后端对 undefined
+  // 才回退中性默认句。
+  const continuationMessage = elements.anchorContinuation.value
   const reasoningEffort = elements.anchorReasoningEffort.value
   const maximumCalls = runs * maxSubturns
   if (!window.confirm(`将为 ${profile.toUpperCase()} 生成专属 Anchor，最多发起 ${maximumCalls} 次计费上游请求。继续吗？`)) return
@@ -1485,7 +2600,7 @@ setInterval(() => {
 
 setInterval(async () => {
   if (document.hidden) return
-  if (!state.jobs.some((job) => ['queued', 'running', 'freezing'].includes(job.status))) return
+  if (!state.jobs.some((job) => ['queued', 'running', 'reserving-name', 'freezing'].includes(job.status))) return
   try {
     const result = await fetchJson('/__gateway/anchors/jobs')
     const jobs = Array.isArray(result.jobs) ? result.jobs : []

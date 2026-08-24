@@ -94,6 +94,22 @@ test('records the exact current DeepSeek V4 capacity separately from requests', 
   assert.equal(DSH_REPRODUCTION_MAX_TOKENS, 256_000)
 })
 
+test('labels the experimental Vision model with its own ID, modalities, and flag', () => {
+  const vision = capabilitiesForModel('deepseek-v4-flash-vision-exp')
+
+  assert.equal(vision.servedVersion, 'deepseek-v4-flash-vision-exp')
+  assert.deepEqual(vision.inputModalities, ['text', 'image'])
+  assert.equal(vision.experimental, true)
+  assert.equal(
+    capabilitiesForModel('deepseek-v4-pro').inputModalities.includes('image'),
+    false,
+  )
+  assert.equal(
+    capabilitiesForModel('deepseek-v4-flash').inputModalities.includes('image'),
+    false,
+  )
+})
+
 test('rejects unknown models instead of attaching incorrect capability metadata', () => {
   assert.throws(
     () => capabilitiesForModel('deepseek-v4-unknown'),

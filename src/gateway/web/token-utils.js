@@ -56,7 +56,10 @@ export function normalizeTokens(usage) {
     usage.reasoning_tokens,
   )
   const cache = cacheUsageFrom(usage)
+  const total = firstNumber(usage.total_tokens)
+    ?? (input !== null && output !== null ? input + output : null)
   return {
+    total,
     input,
     output,
     reasoning,

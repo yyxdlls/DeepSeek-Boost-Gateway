@@ -42,4 +42,10 @@ Gateway 的运行时设计优先参考以下可复算来源，而不是社区转
 
 引用外部实现时固定仓库、提交和实验日期。`dsh-anchored-standard` 仍在快速迭代：早期 98/99 运行在 promotion 后一次性恢复 25 工具，当前版本因观测到 post-promotion regression，已经改为 Minimal pair + discovery tools + 按需解锁。Gateway 应保留这个版本差异，不能把旧报告和新实现混成同一个协议。
 
-Gateway 的 `deepseek-trajectory-markers-v1` 直接对齐上述 `modeltest` 分析脚本公开的 `blocks`、`chars`、`p50_chars`、`p90_chars`、开头 marker、`we`、`let_me`、`lets` 和 `i` 统计。`We need`、`The user wants`、`I need/should/will` 来自本仓库受控分类器；`I am`、`I'm`、`I'am` 只作为用户灰测观察项单独计数。裸 `let` 不统计，任何词频都不进入 Anchor 合格判定。
+Gateway 的 `deepseek-cot-markers-v3` 直接对齐上述 `modeltest` 分析脚本公开的 `blocks`、`chars`、`p50_chars`、`p90_chars`、开头 marker、`we`、`let_me`、`lets` 和 `i` 统计思路，但只保留四组思维链关键字（英文在前中文在后）：`I'm …ing`/`我正在`（灰度测试特征）、`we need`/`我们需要`、`let's`/`让我们`（正式版强思维链 Minimal）、`let me`/`让我`（负向前瞻排除`让我们`，正式版弱思维链）。判定优先级：命中一条 `I'm …ing` → 灰度测试思维链；`let me` 累计 ≥3 → let me 思维链；`we need`/`let's` 系 ≥1 且 ≥ 2×`let me` → Minimal 思维链；否则无倾向。任何词频都不进入 Anchor 合格判定。
+
+`we need` / `let's` 系（collective）与 `let me` 只观察模型自然输出；Builder 不追加关键字 steering，也不按词频判定合格/不合格。用户根据关键字、两个工具调用状态与完整对话自行挑选。另一条产品纪律：把 Pro 思维链直接复制出来的「Flash baseline」不是 Flash 原生的生成结果，已从内置 Anchors 目录移除；Anchor catalog 与加载器都会排除或拒绝带 `copiedBaseline` 标记的 Artifact。Flash/Vision 没有可信的内置模型原生 Anchor，默认 `bypass`，必须先用目标模型生成属于它的 Anchor 并绑定后才能切到 `anchor` 模式。
+
+部署拓扑是独立配置：`split` 为每模型独立数据端口，`single` 为一个按 `request.model` 分发的多模型路由口，`all` 同时开放 split 与额外的多模型路由口。路由口不是合并逻辑面，各模型使用自己的上游、Key 与增强模式。拓扑切换只在重启时生效；不能把进程监听迁移伪装成 Profile 热更新。
+
+当前微锚点实现只作用于 OpenAI-compatible [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion) 消息数组（Responses / Anthropic 适配未实现）；系统与头部实现细节见 [micro-anchor.md](micro-anchor.md)。

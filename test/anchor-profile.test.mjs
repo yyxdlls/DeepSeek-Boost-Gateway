@@ -3,6 +3,9 @@ import test from 'node:test'
 import {
   ANCHOR_TASK,
   OPEN_WORKSTREAM_ANCHOR_TASK,
+  OPEN_WORKSTREAM_CONTINUATION_MESSAGE,
+  OPEN_WORKSTREAM_FIXTURE_FINGERPRINT,
+  OPEN_WORKSTREAM_FIXTURE_ID,
   OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY,
   SYNTHETIC_REPOSITORY,
   buildInitialAnchorRequest,
@@ -11,6 +14,10 @@ import {
   normalizeAssistantMessage,
   syntheticToolResult,
 } from '../src/lab/anchor-profile.mjs'
+import {
+  canonicalFixtureIdentity,
+  fixtureFingerprint,
+} from '../src/lab/anchor-generation-gates.mjs'
 
 function toolCall(id, name, args) {
   return {
@@ -80,6 +87,12 @@ test('builds a full-capability request that exposes exactly both Minimal tools',
   assert.match(request.messages[1].content, /later assistant turn/)
 })
 
+test('passes the selected reasoning effort into the Anchor request', () => {
+  assert.equal(buildInitialAnchorRequest({ reasoningEffort: 'low' }).reasoning_effort, 'low')
+  assert.equal(buildInitialAnchorRequest({ reasoningEffort: 'high' }).reasoning_effort, 'high')
+  assert.equal(buildInitialAnchorRequest({ reasoningEffort: 'max' }).reasoning_effort, 'max')
+})
+
 test('normalizes assistant messages for exact thinking-mode replay', () => {
   const calls = [toolCall('call-1', 'bash', { command: 'pwd' })]
   const normalized = normalizeAssistantMessage({
@@ -98,16 +111,16 @@ test('normalizes assistant messages for exact thinking-mode replay', () => {
   )
 })
 
-test('builds an open workstream prompt without a terminal answer step', () => {
+test('builds an open workstream prompt that ends with a final assistant response', () => {
   const request = buildInitialAnchorRequest({
     userPrompt: OPEN_WORKSTREAM_ANCHOR_TASK,
   })
   assert.equal(request.messages[1].content, OPEN_WORKSTREAM_ANCHOR_TASK)
-  assert.match(request.messages[1].content, /long, interconnected/)
-  assert.match(request.messages[1].content, /test your ability to investigate/)
-  assert.match(request.messages[1].content, /continuing work/)
-  assert.doesNotMatch(request.messages[1].content, /phase|next stage|environment/i)
-  assert.doesNotMatch(request.messages[1].content, /summarize the repository/i)
+  assert.match(request.messages[1].content, /\/tmp\/qxk_scratch/)
+  assert.match(request.messages[1].content, /zzq_9f3k\.tmp/)
+  assert.match(request.messages[1].content, /This file will be removed later/)
+  assert.match(request.messages[1].content, /cache hit rate drops suddenly/)
+  assert.doesNotMatch(request.messages[1].content, /warmup|probe is over|WORKSTREAM|README\.md|热身/)
 })
 
 test('returns a deterministic bash result without executing the command', () => {
@@ -126,7 +139,7 @@ test('returns a deterministic bash result without executing the command', () => 
 test('allows read-only stderr suppression but still rejects file redirects', () => {
   const suppressed = syntheticToolResult(
     toolCall('call-safe', 'bash', {
-      command: 'ls -la /repo && find /repo -name WORKSTREAM.md 2>/dev/null',
+      command: 'ls -la /tmp/qxk_scratch && find /tmp/qxk_scratch -name zzq_9f3k.tmp 2>/dev/null',
     }),
     { bashCompletedBeforeSubturn: false },
     1,
@@ -187,15 +200,15 @@ test('serves the open-workstream document through the same two-tool protocol', (
   const result = syntheticToolResult(
     toolCall('call-open', 'str_replace_editor', {
       command: 'view',
-      path: '/repo/WORKSTREAM.md',
+      path: '/tmp/qxk_scratch/zzq_9f3k.tmp',
     }),
     { bashCompletedBeforeSubturn: true },
     2,
     OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY,
   )
   assert.equal(result.event.accepted, true)
-  assert.match(result.message.content, /Interconnected Engineering Problem/)
-  assert.match(result.message.content, /instead of restarting the analysis/)
+  assert.equal(result.message.content, OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY.readmeResult)
+  assert.match(result.message.content, /^ {5}1\tok$/)
 })
 
 test('rejects mutating shell commands and shell-based README reads', () => {
@@ -260,22 +273,39 @@ test('rejects invalid tool structure but only reports Let me drift', () => {
   assert.equal(drift.letMeTotal, 1)
 })
 
-test('accepts an open anchor that stops on the second tool result', () => {
-  const candidate = validCandidate({
-    assistantTurns: validCandidate().assistantTurns.slice(0, 2),
-    finalAnswer: '',
-    stopReason: 'open-after-second-tool-result',
-    messages: [
-      { role: 'system', content: 'system' },
-      { role: 'user', content: 'orientation' },
-      { role: 'assistant', content: '', reasoning_content: 'We need inspect.', tool_calls: [] },
-      { role: 'tool', tool_call_id: 'call-1', content: 'repo' },
-      { role: 'assistant', content: '', reasoning_content: 'We need read.', tool_calls: [] },
-      { role: 'tool', tool_call_id: 'call-2', content: 'brief' },
-    ],
-  })
+test('default continuation is a single neutral sentence without behavioral steering', () => {
+  assert.equal(
+    OPEN_WORKSTREAM_CONTINUATION_MESSAGE,
+    "Let's continue our work.",
+  )
+  assert.doesNotMatch(
+    OPEN_WORKSTREAM_CONTINUATION_MESSAGE,
+    /inspect-before-act|integrate|never invent/i,
+  )
+})
+
+test('open-workstream fixture id and fingerprint are stable and model-agnostic', () => {
+  assert.equal(OPEN_WORKSTREAM_FIXTURE_ID, 'dsh-open-workstream-canonical-v2')
+  assert.equal(OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY.fixtureId, OPEN_WORKSTREAM_FIXTURE_ID)
+  assert.equal(OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY.fingerprint, OPEN_WORKSTREAM_FIXTURE_FINGERPRINT)
+  assert.match(OPEN_WORKSTREAM_FIXTURE_FINGERPRINT, /^[0-9a-f]{64}$/)
+  assert.equal(
+    fixtureFingerprint(OPEN_WORKSTREAM_SYNTHETIC_REPOSITORY),
+    OPEN_WORKSTREAM_FIXTURE_FINGERPRINT,
+  )
+  const serialized = JSON.stringify(canonicalFixtureIdentity())
+  assert.doesNotMatch(serialized, /call_00_AUeQqHMaETvNM4ff8igG3833/)
+  assert.doesNotMatch(serialized, /call_00_qsp9jK74RnKsZ1TEpHtv0927/)
+  assert.doesNotMatch(serialized, /We need follow user instructions precisely/)
+  assert.doesNotMatch(serialized, /a307abda487cd1b463329ccb945ce396/)
+  assert.doesNotMatch(serialized, /reasoning_content/)
+  assert.doesNotMatch(serialized, /"role":"assistant"/)
+})
+
+test('accepts an open-workstream Anchor only as a complete conversation', () => {
+  const candidate = validCandidate()
   const evaluation = evaluateOpenWorkstreamCandidate(candidate)
   assert.equal(evaluation.eligible, true)
-  assert.equal(evaluation.checks.noFinalAnswer, true)
-  assert.equal(evaluation.checks.remainsOpenAfterSecondToolResult, true)
+  assert.equal(evaluation.checks.hasFinalAnswer, true)
+  assert.equal(evaluation.checks.completedWithinTurnLimit, true)
 })

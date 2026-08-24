@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import {
+  findAnchorManifestEntry,
+  normalizeAnchorDisplayName,
+} from './anchor-manifest.mjs'
 import { summarizeMessageTrajectory } from './trajectory-stats.mjs'
 
 export const DEFAULT_ANCHOR_PATH = resolve(
   'anchors',
-  'dsh-minimal-open-workstream-pro.json',
+  'deepseek-v4-pro-open-workstream-20260824101411-f2a74161.json',
 )
 
 export const ENVIRONMENT_SWITCH_MESSAGE = `The bootstrap episode above is complete.
@@ -16,6 +20,64 @@ The next message contains the current Harness instructions, followed by the curr
 
 function fingerprint(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
+export function hasCompleteFinalAssistant(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return false
+  const last = messages.at(-1)
+  return last?.role === 'assistant' && String(last.content ?? '').trim().length > 0
+}
+
+function schemaVersionOf(artifact) {
+  const version = Number(artifact?.schemaVersion ?? 1)
+  return Number.isSafeInteger(version) && version > 0 ? version : 1
+}
+
+function validateManifestBinding(artifact, absolutePath) {
+  const entry = findAnchorManifestEntry(absolutePath)
+  if (!entry) return
+  const sourceModel = artifact.source?.model ?? null
+  if (sourceModel !== entry.model) {
+    throw new Error(
+      `Manifest Anchor ${entry.id} was generated for ${entry.model}, not ${sourceModel ?? '(unknown)'}.`,
+    )
+  }
+  if (artifact.artifactFingerprint !== entry.expectedFingerprint) {
+    throw new Error(
+      `Manifest Anchor fingerprint mismatch for ${entry.id}: stored=${artifact.artifactFingerprint} expected=${entry.expectedFingerprint}`,
+    )
+  }
+}
+
+export function validateAnchorArtifact(artifact, options = {}) {
+  if (!artifact || artifact.kind !== 'deepseek-v4-anchor-artifact') {
+    throw new Error('Anchor artifact kind is invalid.')
+  }
+  if (!Array.isArray(artifact.trajectory?.messages)) {
+    throw new Error('Anchor artifact has no trajectory messages.')
+  }
+  if (!artifact.artifactFingerprint) {
+    throw new Error('Anchor artifact has no fingerprint.')
+  }
+  if (artifact.verification?.copiedBaseline) {
+    throw new Error('Copied baseline Anchor artifacts cannot be loaded at runtime.')
+  }
+  const core = structuredClone(artifact)
+  const stored = core.artifactFingerprint
+  delete core.artifactFingerprint
+  const computed = fingerprint(core)
+  if (computed !== stored) {
+    throw new Error(`Anchor fingerprint mismatch: stored=${stored} computed=${computed}`)
+  }
+  const schemaVersion = schemaVersionOf(artifact)
+  if (schemaVersion >= 2) {
+    normalizeAnchorDisplayName(artifact.displayName)
+    if (!hasCompleteFinalAssistant(artifact.trajectory.messages)) {
+      throw new Error('v2 Anchor artifacts must end with a non-empty final assistant message.')
+    }
+  }
+  if (options.path) validateManifestBinding(artifact, options.path)
+  return artifact
 }
 
 function contentToText(content) {
@@ -33,35 +95,25 @@ function contentToText(content) {
   return JSON.stringify(content)
 }
 
-function validateAnchor(artifact) {
-  if (!artifact || artifact.kind !== 'deepseek-v4-anchor-artifact') {
-    throw new Error('Anchor artifact kind is invalid.')
-  }
-  if (!Array.isArray(artifact.trajectory?.messages)) {
-    throw new Error('Anchor artifact has no trajectory messages.')
-  }
-  if (!artifact.artifactFingerprint) {
-    throw new Error('Anchor artifact has no fingerprint.')
-  }
-  const core = structuredClone(artifact)
-  const stored = core.artifactFingerprint
-  delete core.artifactFingerprint
-  const computed = fingerprint(core)
-  if (computed !== stored) {
-    throw new Error(`Anchor fingerprint mismatch: stored=${stored} computed=${computed}`)
-  }
-  return artifact
-}
-
 export async function loadAnchorArtifact(path = DEFAULT_ANCHOR_PATH) {
   const absolutePath = resolve(path)
-  const artifact = validateAnchor(JSON.parse(await readFile(absolutePath, 'utf8')))
+  const artifact = validateAnchorArtifact(
+    JSON.parse(await readFile(absolutePath, 'utf8')),
+    { path: absolutePath },
+  )
   return {
     path: absolutePath,
     id: artifact.id,
     fingerprint: artifact.artifactFingerprint,
     artifact,
   }
+}
+
+export function resolveContinuationBridge(artifact) {
+  const stored = artifact?.continuation?.message
+  if (typeof stored === 'string') return stored
+  if (schemaVersionOf(artifact) >= 2) return ''
+  return ENVIRONMENT_SWITCH_MESSAGE
 }
 
 function currentHarnessMessage(systemMessages, continuous = false, bridge = '') {
@@ -87,7 +139,7 @@ export function applyAnchorToChatRequest(payload, loadedAnchor) {
     throw new Error('Chat Completions request has no messages array.')
   }
   const artifact = loadedAnchor?.artifact ?? loadedAnchor
-  validateAnchor(artifact)
+  validateAnchorArtifact(artifact)
 
   const originalMessages = structuredClone(payload.messages)
   const systemMessages = originalMessages.filter(
@@ -97,8 +149,7 @@ export function applyAnchorToChatRequest(payload, loadedAnchor) {
     (message) => message?.role !== 'system' && message?.role !== 'developer',
   )
   const anchorMessages = structuredClone(artifact.trajectory.messages)
-  const transitionMessage =
-    artifact.continuation?.message ?? ENVIRONMENT_SWITCH_MESSAGE
+  const transitionMessage = resolveContinuationBridge(artifact)
   const harnessMessage = currentHarnessMessage(
     systemMessages,
     artifact.continuation?.mode === 'same-active-workstream',
@@ -121,6 +172,7 @@ export function applyAnchorToChatRequest(payload, loadedAnchor) {
       anchorFingerprint: artifact.artifactFingerprint,
       anchorMessageCount: anchorMessages.length,
       anchorMessageChars: JSON.stringify(anchorMessages).length,
+      anchorMessageBytes: Buffer.byteLength(JSON.stringify(anchorMessages), 'utf8'),
       anchorHistory: summarizeMessageTrajectory(anchorMessages, 'anchor_history'),
       environmentSwitchChars: transitionMessage.length,
       bridgeMessageChars: harnessMessage.content.length,
