@@ -426,6 +426,18 @@ export class AnchorJobManager {
     if (continuationMessage.length > 4_000) {
       throw new Error('continuationMessage must contain 0 to 4000 characters.')
     }
+    const runs = canonical.preset ? canonical.runs : integer(input.runs, 3, 1, 10, 'runs')
+    const maxSubturns = canonical.preset
+      ? canonical.maxSubturns
+      : integer(input.maxSubturns, 6, 3, 12, 'maxSubturns')
+    const maxTokens = canonical.preset
+      ? canonical.maxTokens
+      : integer(input.maxTokens, 384_000, 1, 384_000, 'maxTokens')
+    const effort = canonical.preset
+      ? canonical.reasoningEffort
+      : reasoningEffort(input.reasoningEffort)
+    // 参数都合法后再清上一轮待选，避免校验失败误废弃已生成候选。
+    this.#abandonPendingForProfile(profileName)
     const job = {
       id,
       profile: profileName,
@@ -439,16 +451,10 @@ export class AnchorJobManager {
       createdAt: new Date().toISOString(),
       startedAt: null,
       completedAt: null,
-      runs: canonical.preset ? canonical.runs : integer(input.runs, 3, 1, 10, 'runs'),
-      maxSubturns: canonical.preset
-        ? canonical.maxSubturns
-        : integer(input.maxSubturns, 6, 3, 12, 'maxSubturns'),
-      maxTokens: canonical.preset
-        ? canonical.maxTokens
-        : integer(input.maxTokens, 384_000, 1, 384_000, 'maxTokens'),
-      reasoningEffort: canonical.preset
-        ? canonical.reasoningEffort
-        : reasoningEffort(input.reasoningEffort),
+      runs,
+      maxSubturns,
+      maxTokens,
+      reasoningEffort: effort,
       continuationMessage,
       anchorPrompt,
       candidateSetId: id,
@@ -541,10 +547,23 @@ export class AnchorJobManager {
     if (job.status !== 'awaiting-selection') {
       throw jobError(409, `Anchor job ${id} is not awaiting a candidate selection (status: ${job.status}).`)
     }
+    this.#abandon(job)
+    return publicJob(job)
+  }
+
+  #abandon(job) {
     job.status = 'discarded'
     job.completedAt = new Date().toISOString()
+    job.error = null
     void rm(job.resultsPath, { force: true }).catch(() => {})
-    return publicJob(job)
+  }
+
+  #abandonPendingForProfile(profileName) {
+    for (const job of this.jobs.values()) {
+      if (job.profile === profileName && job.status === 'awaiting-selection') {
+        this.#abandon(job)
+      }
+    }
   }
 
   async getCandidate(id, candidateIndex) {
@@ -674,7 +693,11 @@ export class AnchorJobManager {
         job.anchorId = null
         job.artifactPath = null
         job.artifactFingerprint = null
-        job.status = error?.statusCode === 409 ? 'awaiting-selection' : 'failed'
+        job.selectedCandidate = null
+        // 落盘前失败必须回到待挑选：候选还在 results 里，不能把整次生成标成
+        // failed，否则界面不再渲染候选，等于白烧上游。
+        const canReselect = Array.isArray(job.candidates) && job.candidates.length > 0
+        job.status = canReselect ? 'awaiting-selection' : 'failed'
       } else {
         this.#releaseName(job)
         job.status = 'saved-not-activated'

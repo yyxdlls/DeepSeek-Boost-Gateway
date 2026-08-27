@@ -22,9 +22,9 @@ test('loads the frozen anchor only after fingerprint verification', async () => 
   assert.equal(loaded.id, 'deepseek-v4-pro-open-workstream-20260824101411-f2a74161')
   assert.equal(
     loaded.fingerprint,
-    '032864c5f60fe86802f53b4a3ff88c48befccbf385d9e0628920f4f10496b763',
+    'ce8cd1288feed85d2e0e087b3f45334c5c63bd308961de537d3734abc349d212',
   )
-  assert.equal(loaded.artifact.trajectory.messages.length, 7)
+  assert.equal(loaded.artifact.trajectory.messages.length, 10)
 })
 
 test('prepends the immutable trajectory and keeps only current Harness tools', async () => {

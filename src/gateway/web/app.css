@@ -2122,9 +2122,64 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.copy-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copy-field code {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--cyan);
+  font-size: 13.5px;
+}
+
+.copy-field .button {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
 .profile-form .button {
   justify-self: end;
   margin-top: 3px;
+}
+
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.profile-form .profile-actions .button {
+  justify-self: unset;
+  margin-top: 0;
+}
+
+.probe-result {
+  margin: 10px 0 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.probe-result.pending {
+  color: var(--faint);
+}
+
+.probe-result.ok {
+  color: var(--green);
+}
+
+.probe-result.error {
+  color: var(--red);
 }
 
 .profile-state {
@@ -2726,10 +2781,12 @@ footer span {
 .job-row-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 8px;
 }
 
-.job-row-actions .button.primary {
+.job-row-actions .button.primary,
+.job-row-actions .button.ghost {
   min-height: 28px;
   padding: 3px 12px;
   font-size: 13.5px;

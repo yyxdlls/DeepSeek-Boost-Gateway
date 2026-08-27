@@ -12,7 +12,7 @@ import {
   summarizeResponseBody,
 } from './trajectory-stats.mjs'
 import { serveWebUiRequest } from './web-ui.mjs'
-import { handleAnchorJobRoutes } from './management-routes.mjs'
+import { handleAnchorJobRoutes, handleProfileProbeRoute } from './management-routes.mjs'
 import { DEFAULT_UPSTREAM_BASE_URL, GATEWAY_MODELS } from './runtime-config.mjs'
 
 const OFFICIAL_MODELS = new Set(Object.values(GATEWAY_MODELS))
@@ -142,6 +142,22 @@ export function buildUpstreamUrl(upstreamBaseUrl, incomingUrl) {
   upstream.search = incoming.search
   upstream.hash = ''
   return upstream
+}
+
+export function rewriteUpstreamRequestModel(body, upstreamModel) {
+  const target = String(upstreamModel ?? '').trim()
+  if (!target || body == null) return body
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8')
+  if (buffer.length === 0) return body
+  try {
+    const parsed = JSON.parse(buffer.toString('utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return body
+    if (!Object.prototype.hasOwnProperty.call(parsed, 'model')) return body
+    if (parsed.model === target) return body
+    return Buffer.from(JSON.stringify({ ...parsed, model: target }), 'utf8')
+  } catch {
+    return body
+  }
 }
 
 function appendIncomingHeader(headers, name, value) {
@@ -444,6 +460,7 @@ function normalizePlane(input, fallbacks = {}) {
     model,
     enabled: input.enabled !== false,
     upstreamBaseUrl: upstream.toString(),
+    upstreamModel: String(input.upstreamModel ?? fallbacks.upstreamModel ?? '').trim(),
     gatewayApiKey,
     gatewayApiKeySource: input.gatewayApiKeySource
       ?? fallbacks.gatewayApiKeySource
@@ -460,6 +477,7 @@ function snapshotPlane(plane) {
     model: plane.model,
     enabled: plane.enabled,
     upstreamBaseUrl: plane.upstreamBaseUrl,
+    upstreamModel: plane.upstreamModel,
     gatewayApiKey: plane.gatewayApiKey,
     gatewayApiKeySource: plane.gatewayApiKeySource,
     defaultMode: plane.defaultMode,
@@ -505,6 +523,7 @@ function publicPlaneView(plane) {
     enabled: plane.enabled,
     mode: plane.defaultMode,
     upstreamBaseUrl: plane.upstreamBaseUrl,
+    upstreamModel: plane.upstreamModel || '',
     gatewayApiKeyConfigured: Boolean(plane.gatewayApiKey),
     gatewayApiKeySource: plane.gatewayApiKeySource,
     microAnchorEnabled: Boolean(micro?.enabled),
@@ -541,6 +560,7 @@ function publicProfileFromPlane(plane) {
     model: view.model,
     enabled: view.enabled,
     upstreamBaseUrl: view.upstreamBaseUrl,
+    upstreamModel: view.upstreamModel || '',
     apiKeyConfigured: view.gatewayApiKeyConfigured,
     apiKeySource: view.gatewayApiKeySource,
     enhancementMode: view.mode,
@@ -652,6 +672,7 @@ export function createGatewayServer(options = {}) {
         model: Array.isArray(options.allowedModels) ? options.allowedModels[0] ?? '' : '',
         enabled: true,
         upstreamBaseUrl: upstreamBaseUrl.toString(),
+        upstreamModel: String(options.upstreamModel ?? '').trim(),
         gatewayApiKey: options.gatewayApiKey ?? '',
         gatewayApiKeySource: options.gatewayApiKeySource ?? (options.gatewayApiKey ? 'gateway' : 'none'),
         defaultMode: options.defaultMode === 'anchor' ? 'anchor' : 'bypass',
@@ -686,7 +707,7 @@ export function createGatewayServer(options = {}) {
     ),
     upstreamTimeoutMs: positiveInteger(options.upstreamTimeoutMs, 15 * 60 * 1000),
     requestLimitBytes: positiveInteger(options.requestLimitBytes, 32 * 1024 * 1024),
-    diagnosticHistoryLimit: positiveInteger(options.diagnosticHistoryLimit, 100),
+    diagnosticHistoryLimit: positiveInteger(options.diagnosticHistoryLimit, 500),
     logMaxBytes: positiveInteger(options.logMaxBytes, 64 * 1024 * 1024),
     logMaxFiles: positiveInteger(options.logMaxFiles, 5),
     logDir,
@@ -705,6 +726,7 @@ export function createGatewayServer(options = {}) {
     readAnchorContent: typeof options.readAnchorContent === 'function' ? options.readAnchorContent : null,
     deleteAnchor: typeof options.deleteAnchor === 'function' ? options.deleteAnchor : null,
     updateProfile: typeof options.updateProfile === 'function' ? options.updateProfile : null,
+    probeProfile: typeof options.probeProfile === 'function' ? options.probeProfile : null,
     profileViews: typeof options.profileViews === 'function' ? options.profileViews : null,
     anchorJobs: options.anchorJobs ?? null,
     listMicroAnchors: typeof options.listMicroAnchors === 'function' ? options.listMicroAnchors : null,
@@ -1141,6 +1163,25 @@ export function createGatewayServer(options = {}) {
       return
     }
 
+    if (
+      config.managementEnabled
+      && request.method === 'POST'
+      && localUrl.pathname.startsWith('/__gateway/config/profiles/')
+    ) {
+      if (!managementAuthorized(request, config)) {
+        sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
+        return
+      }
+      if (await handleProfileProbeRoute({
+        request,
+        response,
+        pathname: localUrl.pathname,
+        sendJson,
+        mutationAuthorized: managementMutationAuthorized,
+        probeProfile: config.probeProfile,
+      })) return
+    }
+
     if (config.managementEnabled && localUrl.pathname.startsWith('/__gateway/anchors/jobs')) {
       if (!managementAuthorized(request, config)) {
         sendJson(response, 401, { error: { type: 'gateway_management_unauthorized' } })
@@ -1374,6 +1415,8 @@ export function createGatewayServer(options = {}) {
       const injected = injectStreamUsage(parsedUpstream, upstreamText)
       upstreamBody = Buffer.from(injected, 'utf8')
     }
+    upstreamBody = rewriteUpstreamRequestModel(upstreamBody, planeSnapshot.upstreamModel)
+    const outboundText = upstreamBody.toString('utf8')
 
     const rawRequestPayload = parsedChatRequest ?? (isChatCompletions ? maybeParseJson(requestText) : null)
     const exchange = {
@@ -1395,8 +1438,8 @@ export function createGatewayServer(options = {}) {
       transformation: anchorMetrics,
       upstreamRequest: {
         bytes: upstreamBody.length,
-        summary: summarizeRequest(upstreamText, 'upstream_history'),
-        ...bodyCapture(config, upstreamText, requestContentType, false),
+        summary: summarizeRequest(outboundText, 'upstream_history'),
+        ...bodyCapture(config, outboundText, requestContentType, false),
       },
     }
 

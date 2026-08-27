@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
-import { handleAnchorJobRoutes } from './management-routes.mjs'
+import { handleAnchorJobRoutes, handleProfileProbeRoute } from './management-routes.mjs'
 import { COT_MARKER_PROFILE } from './trajectory-stats.mjs'
 import { serveWebUiRequest } from './web-ui.mjs'
 
@@ -83,6 +83,7 @@ export function createGatewayManagementServer(options = {}) {
     dataServers: options.dataServers ?? [],
     profileViews: options.profileViews ?? (() => []),
     updateProfile: options.updateProfile ?? null,
+    probeProfile: options.probeProfile ?? null,
     deploymentView: options.deploymentView ?? (() => ({ mode: options.deploymentMode ?? 'split', combinedPort: 8646 })),
     updateDeployment: options.updateDeployment ?? null,
     anchorJobs: options.anchorJobs ?? null,
@@ -167,10 +168,10 @@ export function createGatewayManagementServer(options = {}) {
     }
 
     if (request.method === 'GET' && localUrl.pathname === '/__gateway/diagnostics') {
-      const requestedLimit = Number(localUrl.searchParams.get('limit') ?? 100)
+      const requestedLimit = Number(localUrl.searchParams.get('limit') ?? 500)
       const limit = Number.isSafeInteger(requestedLimit)
         ? Math.min(Math.max(requestedLimit, 1), 500)
-        : 100
+        : 500
       const entries = diagnostics(limit)
       sendJson(response, 200, {
         schemaVersion: 1,
@@ -471,6 +472,15 @@ export function createGatewayManagementServer(options = {}) {
       }
       return
     }
+
+    if (await handleProfileProbeRoute({
+      request,
+      response,
+      pathname: localUrl.pathname,
+      sendJson,
+      mutationAuthorized,
+      probeProfile: config.probeProfile,
+    })) return
 
     if (await handleAnchorJobRoutes({
       request,

@@ -74,7 +74,7 @@ async function readExchanges(path) {
 }
 
 export async function loadDiagnosticHistory(options = {}) {
-  const limit = Math.max(1, Number(options.limit) || 100)
+  const limit = Math.max(1, Number(options.limit) || 500)
   const maxFiles = Math.max(1, Number(options.maxFiles) || 5)
   const logFile = resolve(options.logFile ?? join('results', 'gateway', 'traffic.jsonl'))
   const profile = options.profile ?? 'single'

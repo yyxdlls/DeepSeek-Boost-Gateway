@@ -199,6 +199,37 @@ test('Selection and discard are rejected outside the awaiting state', async () =
   assert.throws(() => instance.discard(started.id), /not awaiting a candidate selection/)
 })
 
+test('starting a new job abandons the same profile awaiting-selection round', async () => {
+  const { instance } = manager()
+  const first = instance.start({ profile: 'pro', anchorPrompt: samplePrompt })
+  await settle()
+  assert.equal(instance.get(first.id).status, 'awaiting-selection')
+
+  const second = instance.start({
+    profile: 'pro',
+    anchorPrompt: `${samplePrompt} Another generation.`,
+  })
+  assert.equal(instance.get(first.id).status, 'discarded')
+  assert.equal(second.status, 'queued')
+  await settle()
+  assert.equal(instance.get(second.id).status, 'awaiting-selection')
+  assert.throws(
+    () => instance.select(first.id, { candidate: 1, displayName: '已放弃' }),
+    /not awaiting/,
+  )
+})
+
+test('invalid start does not abandon an awaiting-selection job', async () => {
+  const { instance } = manager()
+  const first = instance.start({ profile: 'pro', anchorPrompt: samplePrompt })
+  await settle()
+  assert.throws(
+    () => instance.start({ profile: 'pro', anchorPrompt: 'too short' }),
+    /anchorPrompt/,
+  )
+  assert.equal(instance.get(first.id).status, 'awaiting-selection')
+})
+
 test('Discarding a job drops the pending candidates', async () => {
   const { instance, activated } = manager()
   const started = instance.start({ profile: 'pro', anchorPrompt: samplePrompt })
@@ -469,6 +500,28 @@ test('getCandidate returns the full stored conversation for preview', async () =
     instance.getCandidate('00000000-0000-0000-0000-000000000000', 1),
     /not found/,
   )
+})
+
+test('failed freeze before write returns to awaiting-selection and keeps candidates', async () => {
+  const { instance } = manager({
+    runBuilder: async (_job, _profile, mode) => {
+      if (mode?.fromResults) {
+        throw new Error('Selected candidate is missing a complete final assistant message.')
+      }
+    },
+  })
+  const started = instance.start({ profile: 'pro', anchorPrompt: samplePrompt })
+  await settle()
+  await assert.rejects(
+    instance.select(started.id, { candidate: 1, displayName: '缺末轮仍可回看' }),
+    /complete final assistant/,
+  )
+  const job = instance.get(started.id)
+  assert.equal(job.status, 'awaiting-selection')
+  assert.equal(job.candidates.length, 2)
+  assert.equal(job.artifactPath, null)
+  assert.equal(job.selectedCandidate, null)
+  assert.match(job.error, /complete final assistant/)
 })
 
 test('select rejects invalid display names before reserving', async () => {

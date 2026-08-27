@@ -128,6 +128,7 @@ export function buildModelPlanes(profile, anchors = {}) {
     model,
     enabled: profile.enabled !== false,
     upstreamBaseUrl: profile.upstreamBaseUrl || DEFAULT_UPSTREAM_BASE_URL,
+    upstreamModel: String(profile.upstreamModel ?? '').trim(),
     gatewayApiKey: profile.gatewayApiKey ?? '',
     gatewayApiKeySource: profile.gatewayApiKeySource ?? (profile.gatewayApiKey ? 'profile' : 'none'),
     defaultMode: profile.defaultMode ?? 'bypass',
@@ -151,7 +152,7 @@ export async function startGatewayProfile(profile, options = {}) {
     const restored = await loadDiagnosticHistory({
       profile: profile.name,
       logFile: join(profile.logDir ?? join(process.cwd(), 'results', 'gateway'), 'traffic.jsonl'),
-      limit: Number(profile.diagnosticHistoryLimit) || 100,
+      limit: Number(profile.diagnosticHistoryLimit) || 500,
       maxFiles: Number(profile.logMaxFiles) || 5,
     })
     if (Array.isArray(diagnosticStore)) diagnosticStore.push(...restored)
@@ -192,6 +193,7 @@ export async function startGatewayProfile(profile, options = {}) {
     readAnchorContent: options.readAnchorContent,
     deleteAnchor: options.deleteAnchor,
     updateProfile: options.updateProfile,
+    probeProfile: options.probeProfile,
     profileViews: options.profileViews,
     anchorJobs: options.anchorJobs,
     listMicroAnchors: options.listMicroAnchors,

@@ -26,6 +26,7 @@ const ENV_FIELDS = Object.freeze({
   host: 'HOST',
   port: 'PORT',
   upstreamBaseUrl: 'UPSTREAM_BASE_URL',
+  upstreamModel: 'UPSTREAM_MODEL',
   apiKey: 'UPSTREAM_API_KEY',
   enhancementMode: 'ENHANCEMENT_MODE',
   anchorPath: 'ANCHOR_PATH',
@@ -45,6 +46,22 @@ export function maskApiKey(value) {
   if (!key) return ''
   if (key.length <= 8) return `${key.slice(0, 2)}••••${key.slice(-2)}`
   return `${key.slice(0, 7)}••••${key.slice(-4)}`
+}
+
+const UPSTREAM_MODEL_MAX = 200
+
+export function normalizeUpstreamModel(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new Error('upstreamModel must be a string.')
+  const normalized = value.trim()
+  if (!normalized) return ''
+  if (normalized.length > UPSTREAM_MODEL_MAX) {
+    throw new Error(`upstreamModel must contain at most ${UPSTREAM_MODEL_MAX} characters.`)
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(normalized)) {
+    throw new Error('upstreamModel must not contain control characters.')
+  }
+  return normalized
 }
 
 function validateMicroAnchorDocument(document) {
@@ -300,6 +317,9 @@ function validateProfilePatch(name, patch) {
       throw new Error('upstreamBaseUrl must use http or https.')
     }
   }
+  if (own(patch, 'upstreamModel')) {
+    normalizeUpstreamModel(patch.upstreamModel)
+  }
   for (const field of ['host', 'upstreamBaseUrl', 'anchorPath', 'logDir']) {
     if (own(patch, field) && typeof patch[field] !== 'string') {
       throw new Error(`${field} must be a string.`)
@@ -332,7 +352,11 @@ export function updateManagedProfile(document, name, patch) {
   for (const field of Object.keys(ENV_FIELDS)) {
     if (field === 'apiKey') continue
     if (own(patch, field)) {
-      next[field] = field === 'anchorPath' ? toCatalogAnchorPath(patch[field]) : patch[field]
+      next[field] = field === 'anchorPath'
+        ? toCatalogAnchorPath(patch[field])
+        : field === 'upstreamModel'
+          ? normalizeUpstreamModel(patch[field])
+          : patch[field]
     }
   }
   if (patch.clearApiKey) next.apiKey = ''
@@ -510,6 +534,7 @@ export function managedProfileViews(environment, document) {
       host: profile.host,
       port: profile.port,
       upstreamBaseUrl: profile.upstreamBaseUrl,
+      upstreamModel: String(profile.upstreamModel ?? '').trim(),
       apiKeyConfigured: Boolean(profile.gatewayApiKey),
       apiKeySource: profile.gatewayApiKeySource ?? 'none',
       apiKeyPreview: maskApiKey(profile.gatewayApiKey),

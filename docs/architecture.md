@@ -42,7 +42,7 @@ JSON 与 SSE 进入同一个响应观测器。SSE 在转发过程中按 choice �
 
 词频 profile 以 `modeltest/evaluator/trajectory_evidence/analyze_trajectory_exports.py` 的公开字段为基线：reasoning blocks、长度、开头 marker、`we`、`let me`、`let's`、`i`。本项目只额外记录受控实验和用户灰测已经出现的精确首行/短语变体。所有词频均为 `diagnosticOnly`；匹配不能证明能力、人格或 Anchor 有效性。
 
-每次响应还记录 finish reason、usage、工具调用序列、客户端断流和上游传输错误。只读诊断面默认保留内存中的最近 100 次统计，不返回原始提示或回复；JSONL metadata 日志有大小与份数上限。
+每次响应还记录 finish reason、usage、工具调用序列、客户端断流和上游传输错误。只读诊断面默认保留内存中的最近 500 次统计，不返回原始提示或回复；JSONL metadata 日志有大小与份数上限。
 
 本地 WebUI 由 Gateway 管理父进程直接提供无构建步骤的静态资源。兼容 `single` 模式下它与数据面共用监听；`split` 模式下管理/WebUI 留在父进程，Pro、Flash 与 Vision 数据面分别运行在受 IPC 监管的子进程和独立端口。父进程结束或 IPC 断开时，子进程主动退出。数据端口不提供页面或公开诊断路径。管理令牌只进入自定义请求头并保存在标签页 sessionStorage，既不进入 URL 也不由 Gateway 返回。所有 `/__gateway/` 路径均在本地终止，不能回落到 Provider。
 

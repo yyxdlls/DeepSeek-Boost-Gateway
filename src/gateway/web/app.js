@@ -416,11 +416,17 @@ function renderTools(names) {
   return `<div class="tool-sequence">${names.map((name, index) => `${index ? '<span class="tool-arrow">→</span>' : ''}<span class="tool-chip">${escapeHtml(name)}</span>`).join('')}</div>`
 }
 
+function entryCurrentInput(entry) {
+  const saved = entry?.messages?.currentInput
+  if (Array.isArray(saved) && saved.length) return saved
+  return GatewayTokenUtils.currentInputMessages(entry?.messages?.request) ?? []
+}
+
 // A request whose new input holds only tool results (no fresh user message)
 // is a pure tool turn: the conversation continues from the tool side only.
 function isToolOnlyInput(entry) {
-  const current = entry?.messages?.currentInput
-  if (!Array.isArray(current) || current.length === 0) return false
+  const current = entryCurrentInput(entry)
+  if (!current.length) return false
   return current.every((message) => message?.role === 'tool')
 }
 
@@ -517,41 +523,37 @@ function renderMetrics() {
     : '上游尚未返回缓存 token 数据'
 }
 
-const STREAM_LIMIT = 16
-
-function renderRows() {
-  const entries = filteredEntries().slice(0, STREAM_LIMIT)
-  elements.requestRows.innerHTML = entries.map((entry) => {
-    const status = requestState(entry)
-    const summary = entry.response?.summary
-    const tools = currentToolNames(entry)
-    const tokens = GatewayTokenUtils.tokensFromSummary(summary)
-    const reasoningChars = Number(summary?.reasoning?.chars ?? 0)
-    const toolCount = Number(summary?.tools?.callCount ?? summary?.toolCallCount ?? 0)
-    const inputValue = tokens?.input != null ? formatCompact(tokens.input) : '未返回'
-    const outputValue = tokens?.output != null ? formatCompact(tokens.output) : '未返回'
-    // 推理/正文没有 token 分项时显示「—」，绝不回退字符数；输入/输出没有
-    // usage 时绝不冒充。
-    const reasoningValue = tokens?.reasoning != null
-      ? formatCompact(tokens.reasoning)
-      : '—'
-    const contentValue = tokens?.content != null
-      ? formatCompact(tokens.content)
-      : '—'
-    // 缓存输入/命中率三态：未返回（none）/ 零（默认 amber）/ 有效命中（good）。
-    const cacheInput = tokens?.cacheInput ?? null
-    const hitRate = tokens?.hitRate ?? null
-    const cacheInputState = cacheInput == null ? 'missing' : cacheInput > 0 ? 'good' : 'zero'
-    const hitRateState = hitRate == null ? 'missing' : hitRate > 0 ? 'good' : 'zero'
-    const cachePills = [
-      `<span class="cache-pill ${cacheInputState === 'good' ? 'good' : cacheInputState === 'missing' ? 'none' : ''}" title="${cacheInputState === 'missing' ? '上游未返回缓存 token 数据' : cacheInputState === 'zero' ? '上游返回缓存输入为 0' : '上游返回有效缓存输入'}">缓存输入 ${cacheInput != null ? `${formatCompact(cacheInput)} tokens` : '未返回'}</span>`,
-      `<span class="cache-pill ${hitRateState === 'good' ? 'good' : hitRateState === 'missing' ? 'none' : ''}" title="${hitRateState === 'missing' ? '上游未返回可计算的命中率' : hitRateState === 'zero' ? '有效缓存数据但命中率为 0' : '按已返回的缓存输入计算'}">命中率 ${hitRate != null ? formatPercent(hitRate) : '未返回'}</span>`,
-    ].join('')
-    const cot = summary?.reasoning?.cot
-    const cotBadge = reasoningChars > 0 && cot?.label ? trajectoryBadge(cot) : ''
-    const modeClass = String(entry.mode ?? '').startsWith('anchor') ? 'anchor' : ''
-    const toolOnly = isToolOnlyInput(entry)
-    return `
+function requestRowHtml(entry) {
+  const status = requestState(entry)
+  const summary = entry.response?.summary
+  const tools = currentToolNames(entry)
+  const tokens = GatewayTokenUtils.tokensFromSummary(summary)
+  const reasoningChars = Number(summary?.reasoning?.chars ?? 0)
+  const toolCount = Number(summary?.tools?.callCount ?? summary?.toolCallCount ?? 0)
+  const inputValue = tokens?.input != null ? formatCompact(tokens.input) : '未返回'
+  const outputValue = tokens?.output != null ? formatCompact(tokens.output) : '未返回'
+  // 推理/正文没有 token 分项时显示「—」，绝不回退字符数；输入/输出没有
+  // usage 时绝不冒充。
+  const reasoningValue = tokens?.reasoning != null
+    ? formatCompact(tokens.reasoning)
+    : '—'
+  const contentValue = tokens?.content != null
+    ? formatCompact(tokens.content)
+    : '—'
+  // 缓存输入/命中率三态：未返回（none）/ 零（默认 amber）/ 有效命中（good）。
+  const cacheInput = tokens?.cacheInput ?? null
+  const hitRate = tokens?.hitRate ?? null
+  const cacheInputState = cacheInput == null ? 'missing' : cacheInput > 0 ? 'good' : 'zero'
+  const hitRateState = hitRate == null ? 'missing' : hitRate > 0 ? 'good' : 'zero'
+  const cachePills = [
+    `<span class="cache-pill ${cacheInputState === 'good' ? 'good' : cacheInputState === 'missing' ? 'none' : ''}" title="${cacheInputState === 'missing' ? '上游未返回缓存 token 数据' : cacheInputState === 'zero' ? '上游返回缓存输入为 0' : '上游返回有效缓存输入'}">缓存输入 ${cacheInput != null ? `${formatCompact(cacheInput)} tokens` : '未返回'}</span>`,
+    `<span class="cache-pill ${hitRateState === 'good' ? 'good' : hitRateState === 'missing' ? 'none' : ''}" title="${hitRateState === 'missing' ? '上游未返回可计算的命中率' : hitRateState === 'zero' ? '有效缓存数据但命中率为 0' : '按已返回的缓存输入计算'}">命中率 ${hitRate != null ? formatPercent(hitRate) : '未返回'}</span>`,
+  ].join('')
+  const cot = summary?.reasoning?.cot
+  const cotBadge = reasoningChars > 0 && cot?.label ? trajectoryBadge(cot) : ''
+  const modeClass = String(entry.mode ?? '').startsWith('anchor') ? 'anchor' : ''
+  const toolOnly = isToolOnlyInput(entry)
+  return `
       <div data-request-id="${escapeHtml(entry.requestId)}" tabindex="0" role="listitem" class="request-row ${entry.requestId === state.selectedId ? 'selected' : ''}" aria-label="查看请求 ${escapeHtml(entry.requestId)}">
         <div class="row-line row-primary">
           <span class="row-time">${escapeHtml(formatTime(entry.startedAt))}</span>
@@ -573,9 +575,20 @@ function renderRows() {
           ${tools.length ? renderTools(tools) : ''}
         </div>
       </div>`
-  }).join('')
+}
 
-  elements.requestEmpty.hidden = entries.length > 0
+function renderRows() {
+  const entries = filteredEntries()
+  if (!entries.length) {
+    elements.requestRows.innerHTML = ''
+    elements.requestEmpty.hidden = false
+    elements.requestCount.textContent = state.entries.length
+      ? '筛选后没有匹配的请求'
+      : '暂无已保存诊断记录；完成或中断的请求会写入轮转日志'
+    return
+  }
+  elements.requestRows.innerHTML = entries.map((entry) => requestRowHtml(entry)).join('')
+  elements.requestEmpty.hidden = true
   elements.requestCount.textContent = state.entries.length
     ? `显示 ${entries.length} 条，共保留 ${state.entries.length} 条 · 详情可查看本次新增输入与新回复`
     : '暂无已保存诊断记录；完成或中断的请求会写入轮转日志'
@@ -988,7 +1001,7 @@ function renderProfiles() {
     return `
     <article class="profile-card">
       <div class="profile-title">
-        <div><strong>${escapeHtml(profile.name)}</strong><small>${escapeHtml(profile.model)}</small></div>
+        <div><strong>${escapeHtml(profile.name)}</strong></div>
         <span class="profile-state ${profile.running ? 'running' : ''}">${profile.running ? '运行中' : '已停止'}</span>
       </div>
       <form class="profile-form" data-profile="${escapeHtml(profile.name)}">
@@ -996,13 +1009,24 @@ function renderProfiles() {
           <label class="toggle-field wide"><input name="enabled" type="checkbox" ${profile.enabled ? 'checked' : ''}><span>启用 ${escapeHtml(profile.name.toUpperCase())} 数据面</span></label>
           <label><span>数据端口</span><input name="port" type="number" min="1" max="65535" value="${escapeHtml(profile.port)}" required></label>
           <label><span>增强模式</span><select name="enhancementMode"><option value="anchor" ${profile.enhancementMode === 'anchor' ? 'selected' : ''}>anchor</option><option value="bypass" ${profile.enhancementMode === 'bypass' ? 'selected' : ''}>bypass</option></select></label>
+          <label class="wide"><span>Harness 模型名</span>
+            <div class="copy-field">
+              <code>${escapeHtml(profile.model)}</code>
+              <button class="button secondary" type="button" data-copy-id="${escapeHtml(profile.model)}">复制</button>
+            </div>
+          </label>
+          <label class="wide"><span>上游模型名</span><input name="upstreamModel" type="text" value="${escapeHtml(profile.upstreamModel ?? '')}" placeholder="${escapeHtml(profile.model)}" spellcheck="false" autocomplete="off"></label>
           <label class="wide"><span>上游 Base URL</span><input name="upstreamBaseUrl" type="url" value="${escapeHtml(profile.upstreamBaseUrl)}" required spellcheck="false"></label>
           <label class="wide"><span>Gateway API Key</span><input name="apiKey" type="password" value="" placeholder="${profile.apiKeyConfigured ? '输入新 Key 可替换；留空保持不变' : '尚未配置'}" autocomplete="new-password" spellcheck="false">${keyPreview}</label>
           <label class="wide"><span>模型专属 Anchor</span><select name="anchorPath">${anchorOptions}</select></label>
           <label class="toggle-field wide"><input name="clearApiKey" type="checkbox"><span>保存时清除现有 Key</span></label>
         </div>
-        <p class="form-note">Key 只写入本机 <code>gateway.config.json</code>，页面只读取脱敏预览、绝不回传明文；无模型原生 Anchor 时先用 bypass，生成并绑定后再切换 anchor。</p>
-        <button class="button primary" type="submit">保存并热应用 ${escapeHtml(profile.name.toUpperCase())}</button>
+        <p class="form-note">Harness 接入时填写官方模型名；上游模型名只用于转发给外部 API，留空则与 Harness 模型名相同。测试回复会用当前已保存的地址、Key 和上游模型名发送「你好」。Key 只写入本机 <code>gateway.config.json</code>，页面只读取脱敏预览、绝不回传明文；无模型原生 Anchor 时先用 bypass，生成并绑定后再切换 anchor。</p>
+        <p class="probe-result" data-probe-result="${escapeHtml(profile.name)}" hidden></p>
+        <div class="profile-actions">
+          <button class="button secondary" type="button" data-probe-profile="${escapeHtml(profile.name)}">测试回复</button>
+          <button class="button primary" type="submit">保存并热应用 ${escapeHtml(profile.name.toUpperCase())}</button>
+        </div>
       </form>
     </article>`
   }).join('')
@@ -1097,7 +1121,8 @@ function renderJobProgress(job) {
 }
 
 function renderCandidateList(job) {
-  if (job.status !== 'awaiting-selection' || !job.candidates?.length) return ''
+  if (!job.candidates?.length || job.status === 'discarded') return ''
+  const selectable = job.status === 'awaiting-selection'
   return `
     <div class="candidate-list">
       ${job.candidates.map((candidate) => {
@@ -1122,7 +1147,11 @@ function renderCandidateList(job) {
             </div>
             <div class="candidate-actions">
               <button class="button ghost" type="button" data-view-candidate="${escapeHtml(job.id)}" data-candidate-index="${candidate.candidateIndex}">查看完整对话</button>
-              <button class="button primary candidate-select" type="button" data-select-candidate="${escapeHtml(job.id)}" data-candidate-index="${candidate.candidateIndex}">选用并保存</button>
+              ${selectable
+                ? `<button class="button primary candidate-select" type="button" data-select-candidate="${escapeHtml(job.id)}" data-candidate-index="${candidate.candidateIndex}">选用并保存</button>`
+                : job.selectedCandidate === candidate.candidateIndex
+                  ? '<span class="muted">已选用</span>'
+                  : ''}
             </div>
           </div>
           <div class="basic-stats">
@@ -1144,9 +1173,7 @@ function renderCandidateList(job) {
         </div>`
       }).join('')}
     </div>
-    <div class="job-actions">
-      <button class="button ghost" type="button" data-discard-job="${escapeHtml(job.id)}">废弃本次生成</button>
-    </div>`
+`
 }
 
 function jobDetail(job) {
@@ -1172,9 +1199,18 @@ function renderAnchorJobs() {
   }
   elements.anchorJobs.innerHTML = state.jobs.slice(0, 5).map((job) => {
     const detail = jobDetail(job)
-    const expanded = ['awaiting-selection', 'running', 'queued', 'saved-not-activated'].includes(job.status)
-    const rebind = job.status === 'saved-not-activated'
-      ? `<div class="job-row-actions"><button class="button primary" type="button" data-activate-job="${escapeHtml(job.id)}">重新绑定</button></div>`
+    const expanded = ['awaiting-selection', 'running', 'queued', 'saved-not-activated', 'reserving-name', 'failed'].includes(job.status)
+      || Boolean(job.candidates?.length)
+    const rowActions = [
+      job.status === 'awaiting-selection'
+        ? `<button class="button ghost" type="button" data-discard-job="${escapeHtml(job.id)}">放弃本轮生成</button>`
+        : '',
+      job.status === 'saved-not-activated'
+        ? `<button class="button primary" type="button" data-activate-job="${escapeHtml(job.id)}">重新绑定</button>`
+        : '',
+    ].filter(Boolean)
+    const actions = rowActions.length
+      ? `<div class="job-row-actions">${rowActions.join('')}</div>`
       : ''
     return `
     <div class="job-card ${job.status === 'running' || job.status === 'queued' ? 'running' : ''} ${expanded ? 'expanded' : ''}">
@@ -1185,7 +1221,7 @@ function renderAnchorJobs() {
         </div>
         <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(jobStatusLabels[job.status] ?? job.status)}</span>
       </div>
-      ${rebind}
+      ${actions}
       ${renderJobProgress(job)}
       ${renderCandidateList(job)}
     </div>`
@@ -1234,18 +1270,9 @@ function openSelectDialog(jobId, candidateIndex) {
   const job = state.jobs.find((item) => item.id === jobId)
   if (!job) return
   if (elements.selectDialog.open) return
-  // A: 工具调用不是保存门槛。缺 bash / view 时仍高亮未调用，但保存前
-  // 让用户确认；取消则不发请求，确认后照常保存。
-  const numericCandidateIndex = Number(candidateIndex)
-  const candidate = (job.candidates ?? []).find(
-    (item) => item.candidateIndex === numericCandidateIndex,
-  )
-  const toolsComplete = Boolean(candidate?.toolStatus?.bash) &&
-    Boolean(candidate?.toolStatus?.strReplaceEditor)
-  if (!toolsComplete) {
-    const confirmed = window.confirm('该候选未完成全部工具调用（bash / view）。仍要保存吗？')
-    if (!confirmed) return
-  }
+  // 工具调用不是保存门槛：缺 bash / view 只在卡片上标「未调用」，
+  // 不再弹确认、也不拦保存。硬拦仍只在服务端（unsafe / 无完整末轮
+  // assistant / 指纹·模型·夹具不匹配）。
   state.selectJobId = jobId
   state.selectCandidateIndex = Number(candidateIndex)
   elements.selectDialogNote.textContent = `候选 ${candidateIndex} · ${job.profile.toUpperCase()} · 保存生成机器 id/path 后尝试绑定 ${job.profile.toUpperCase()} 数据面`
@@ -1267,7 +1294,7 @@ async function pickJobAction(button, action) {
   const jobId = button.dataset.discardJob
   const job = state.jobs.find((item) => item.id === jobId)
   if (!job) return
-  if (!window.confirm('将废弃本次生成的全部候选，结果文件也会一并删除，已产生的上游费用不会退回。确定继续吗？')) return
+  if (!window.confirm('将放弃本轮生成的全部候选，结果文件也会一并删除，已产生的上游费用不会退回。确定继续吗？')) return
   button.disabled = true
   try {
     const result = await fetchJson(`/__gateway/anchors/jobs/${encodeURIComponent(jobId)}/discard`, {
@@ -1277,7 +1304,7 @@ async function pickJobAction(button, action) {
     updateJobFromResult(result.job)
     renderAnchorJobs()
     renderAnchorControls()
-    toast('本次生成已废弃')
+    toast('本轮生成已放弃')
     void loadData({ quiet: true })
   } catch (error) {
     toast(`操作失败：${error.message}`)
@@ -1356,9 +1383,10 @@ elements.selectForm.addEventListener('submit', async (event) => {
       renderAnchorControls()
       return
     }
+    submit.disabled = false
+    await refreshJobsQuiet()
     elements.selectError.textContent = error.message
     elements.selectError.hidden = false
-    submit.disabled = false
   }
 })
 
@@ -1595,13 +1623,8 @@ function openLiveDialog(jobId) {
 // observed assistant reply. The full conversation history is intentionally
 // not shown here.
 function renderRequestMessages(entry) {
-  const requestMessages = Array.isArray(entry.messages?.request) ? entry.messages.request : []
   const responseMessages = Array.isArray(entry.messages?.response) ? entry.messages.response : []
-  const savedCurrent = Array.isArray(entry.messages?.currentInput)
-    ? entry.messages.currentInput
-    : null
-  const currentInput = savedCurrent ?? GatewayTokenUtils.currentInputMessages(requestMessages)
-  const inputMessages = currentInput ?? []
+  const inputMessages = entryCurrentInput(entry)
   const diagnostic = diagnosticMicroAnchor(entry.transformation)
   const hasMicro = Boolean(diagnostic?.micro?.applied)
   const inputHasUser = inputMessages.some((message) => message?.role === 'user')
@@ -2500,6 +2523,58 @@ elements.detailPanel.addEventListener('click', (event) => {
   if (button) copyText(button.dataset.copyId, '请求 ID 已复制')
 })
 
+async function probeProfile(button) {
+  const name = button.dataset.probeProfile
+  const resultEl = button.closest('form')?.querySelector('[data-probe-result]')
+  const original = button.textContent
+  button.disabled = true
+  button.textContent = '正在请求回复…'
+  if (resultEl) {
+    resultEl.hidden = false
+    resultEl.className = 'probe-result pending'
+    resultEl.textContent = '正在向上游发送「你好」…'
+  }
+  try {
+    const result = await fetchJson(
+      `/__gateway/config/profiles/${encodeURIComponent(name)}/probe`,
+      { method: 'POST', body: {} },
+    )
+    if (result.ok) {
+      toast(`${name.toUpperCase()} 已回复（${result.latencyMs}ms）`)
+      if (resultEl) {
+        resultEl.className = 'probe-result ok'
+        resultEl.textContent = `回复：${result.reply || '（空）'} · ${result.latencyMs}ms · ${result.upstreamModel || result.model}`
+      }
+      return
+    }
+    toast(`${name.toUpperCase()} 测试失败：${result.error}`)
+    if (resultEl) {
+      resultEl.className = 'probe-result error'
+      resultEl.textContent = result.error || '测试失败'
+    }
+  } catch (error) {
+    toast(`${name.toUpperCase()} 测试失败：${error.message}`)
+    if (resultEl) {
+      resultEl.className = 'probe-result error'
+      resultEl.textContent = error.message
+    }
+  } finally {
+    button.disabled = false
+    button.textContent = original
+  }
+}
+
+elements.profileList.addEventListener('click', (event) => {
+  const probeButton = event.target.closest('[data-probe-profile]')
+  if (probeButton) {
+    event.preventDefault()
+    void probeProfile(probeButton)
+    return
+  }
+  const button = event.target.closest('[data-copy-id]')
+  if (button) copyText(button.dataset.copyId, 'Harness 模型名已复制')
+})
+
 elements.profileList.addEventListener('submit', async (event) => {
   const form = event.target.closest('form[data-profile]')
   if (!form) return
@@ -2510,6 +2585,7 @@ elements.profileList.addEventListener('submit', async (event) => {
     enabled: data.get('enabled') === 'on',
     port: Number(data.get('port')),
     upstreamBaseUrl: String(data.get('upstreamBaseUrl') ?? '').trim(),
+    upstreamModel: String(data.get('upstreamModel') ?? '').trim(),
     enhancementMode: String(data.get('enhancementMode') ?? ''),
     anchorPath: String(data.get('anchorPath') ?? '').trim(),
     clearApiKey: data.get('clearApiKey') === 'on',
@@ -2586,7 +2662,12 @@ elements.anchorForm.addEventListener('submit', async (event) => {
   const continuationMessage = elements.anchorContinuation.value
   const reasoningEffort = elements.anchorReasoningEffort.value
   const maximumCalls = runs * maxSubturns
-  if (!window.confirm(`将为 ${profile.toUpperCase()} 生成专属 Anchor，最多发起 ${maximumCalls} 次计费上游请求。继续吗？`)) return
+  const pending = state.jobs.find((job) =>
+    job.profile === profile && job.status === 'awaiting-selection')
+  const pendingNote = pending
+    ? `\n\n该模型上一轮还有 ${pending.candidates?.length ?? 0} 个待选候选，开始后会自动放弃。`
+    : ''
+  if (!window.confirm(`将为 ${profile.toUpperCase()} 生成专属 Anchor，最多发起 ${maximumCalls} 次计费上游请求。${pendingNote}继续吗？`)) return
   const submit = elements.anchorForm.querySelector('button[type="submit"]')
   submit.disabled = true
   submit.textContent = '已启动生成任务'
@@ -2608,6 +2689,7 @@ elements.anchorForm.addEventListener('submit', async (event) => {
 
 elements.searchInput.addEventListener('input', renderRows)
 elements.statusFilter.addEventListener('change', renderRows)
+elements.inputFilter.addEventListener('change', renderRows)
 elements.clearDiagnostics.addEventListener('click', async () => {
   if (!window.confirm('这会永久删除全部模型数据面的已保存请求统计、traffic 日志和 activity 日志，无法恢复。确定继续吗？')) return
   const confirmation = window.prompt('为防止误删，请准确输入：清空全部请求')

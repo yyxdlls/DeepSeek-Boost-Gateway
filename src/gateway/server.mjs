@@ -38,6 +38,7 @@ import {
   mutationResult,
 } from './managed-mutation-coordinator.mjs'
 import { createGatewayManagementServer } from './management-server.mjs'
+import { probeManagedProfile } from './upstream-probe.mjs'
 import { listenGateway } from './proxy.mjs'
 import {
   removeGatewayPidFile,
@@ -148,6 +149,7 @@ try {
       dataServers,
       profileViews: () => runtime.profileViews(),
       updateProfile: (name, patch) => runtime.updateProfile(name, patch),
+      probeProfile: (name) => runtime.probeProfile(name),
       deploymentView: () => runtime.deploymentView(),
       updateDeployment: (patch) => runtime.updateDeployment(patch),
       anchorJobs,
@@ -314,6 +316,7 @@ try {
         bindings: anchorBindingsFromViews(singleModeProfileViews()),
       }),
       updateProfile: (name, patch) => updateSingleProfile(name, patch),
+      probeProfile: (name) => probeManagedProfile(secretProfile(name)),
       profileViews: singleModeProfileViews,
       anchorJobs,
       listMicroAnchors: () => managedMicroAnchorView(managedDocument),

@@ -35,7 +35,7 @@ export function spawnGatewayProfileProcess(profile, options = {}) {
     const diagnostics = Array.isArray(options.diagnosticStore)
       ? options.diagnosticStore
       : []
-    const historyLimit = Math.max(1, Number(profile.diagnosticHistoryLimit) || 100)
+    const historyLimit = Math.max(1, Number(profile.diagnosticHistoryLimit) || 500)
     const pendingOperations = new Map()
     const child = fork(WORKER_PATH, [], {
       cwd: process.cwd(),

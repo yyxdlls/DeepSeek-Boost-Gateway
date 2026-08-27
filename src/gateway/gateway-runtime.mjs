@@ -20,6 +20,7 @@ import {
   structuredMutationError,
 } from './managed-mutation-coordinator.mjs'
 import { spawnGatewayProfileProcess } from './profile-process.mjs'
+import { probeManagedProfile } from './upstream-probe.mjs'
 import {
   gatewayCombinedProfile,
   gatewayRuntimeProfiles,
@@ -62,6 +63,7 @@ function planeFingerprint(planes) {
     model: plane?.model ?? null,
     enabled: plane?.enabled !== false,
     upstreamBaseUrl: plane?.upstreamBaseUrl ?? '',
+    upstreamModel: plane?.upstreamModel ?? '',
     gatewayApiKey: plane?.gatewayApiKey ?? '',
     defaultMode: plane?.defaultMode ?? null,
     anchorPath: plane?.anchorPath ?? '',
@@ -79,6 +81,7 @@ function profileSignature(profile) {
     port: profile.port,
     models: profile.models,
     upstreamBaseUrl: profile.upstreamBaseUrl,
+    upstreamModel: profile.upstreamModel ?? '',
     gatewayApiKey: profile.gatewayApiKey ?? '',
     defaultMode: profile.defaultMode,
     anchorPaths: profile.anchorPaths ?? {},
@@ -212,6 +215,10 @@ export class GatewayRuntime {
       this.dataServers.push(server)
     }
     return this.dataServers
+  }
+
+  async probeProfile(name) {
+    return probeManagedProfile(this.secretProfile(name))
   }
 
   async updateProfile(name, patch) {

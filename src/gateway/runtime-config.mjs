@@ -130,6 +130,7 @@ export function gatewayModelPlanes(env = process.env) {
         descriptor.defaultEnabled,
       ),
       upstreamBaseUrl: ownProfileUpstream(env, descriptor.prefix),
+      upstreamModel: String(env[`${descriptor.prefix}_UPSTREAM_MODEL`] ?? '').trim(),
       gatewayApiKey,
       gatewayApiKeySource: gatewayApiKey ? 'profile' : 'none',
       defaultMode: nonEmpty(
@@ -205,6 +206,7 @@ function splitProfile(env, descriptor) {
     models: [descriptor.model],
     planes: plane ? [plane] : [],
     upstreamBaseUrl: plane?.upstreamBaseUrl ?? DEFAULT_UPSTREAM_BASE_URL,
+    upstreamModel: String(plane?.upstreamModel ?? '').trim(),
     gatewayApiKey: plane?.gatewayApiKey ?? '',
     gatewayApiKeySource: plane?.gatewayApiKeySource ?? 'none',
     managementToken: nonEmpty(

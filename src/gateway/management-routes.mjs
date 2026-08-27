@@ -163,3 +163,42 @@ export async function handleAnchorJobRoutes({
 
   return false
 }
+
+export async function handleProfileProbeRoute({
+  request,
+  response,
+  pathname,
+  sendJson,
+  mutationAuthorized,
+  probeProfile,
+}) {
+  const match = request.method === 'POST'
+    ? pathname.match(/^\/__gateway\/config\/profiles\/(pro|flash|vision)\/probe$/)
+    : null
+  if (!match) return false
+  if (!probeProfile) {
+    sendJson(response, 501, { error: { type: 'gateway_config_read_only' } })
+    return true
+  }
+  if (!mutationAuthorized(request)) {
+    sendJson(response, 403, {
+      error: {
+        type: 'gateway_management_mutation_forbidden',
+        message: 'Upstream probe requires a same-app JSON request marker.',
+      },
+    })
+    return true
+  }
+  try {
+    const result = await probeProfile(match[1])
+    sendJson(response, 200, { schemaVersion: 1, ...result })
+  } catch (error) {
+    sendJson(response, error?.statusCode ?? 400, {
+      error: {
+        type: error?.type ?? 'gateway_upstream_probe_failed',
+        message: error?.message ?? String(error),
+      },
+    })
+  }
+  return true
+}
